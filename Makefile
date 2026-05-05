@@ -5,7 +5,8 @@
 
 CC      ?= gcc
 PKG_CFG ?= pkg-config
-PKGS    := gtk+-3.0 libssh vte-2.91 freerdp3 freerdp-client3 winpr3
+PKGS    := gtk+-3.0 libssh vte-2.91 freerdp3 freerdp-client3 winpr3 \
+           sqlite3 libsecret-1
 
 # We use a privately-built FreeRDP 3 (with channel plugin .so files
 # patched to be dlopen-able). It lives at /opt/remotetool-freerdp so

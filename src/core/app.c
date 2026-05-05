@@ -6,8 +6,10 @@
 
 #include "core/app.h"
 #include "ui/main_window.h"
+#include "storage/db.h"
 
 #include <libssh/libssh.h>
+#include <stdio.h>
 #include <stdlib.h>
 
 #define RT_APP_ID "org.remotetool.RemoteTool"
@@ -36,8 +38,17 @@ rt_app_t *rt_app_new(void)
         return NULL;
     }
 
+    /* Open the SQLite store. Failure is non-fatal - the UI will still
+     * work for one-shot connections, just without saved profiles. */
+    if (rt_db_open() != 0) {
+        fprintf(stderr,
+                "[remoteTool] warning: could not open profile DB - "
+                "saved-connection features disabled this session.\n");
+    }
+
     rt_app_t *app = calloc(1, sizeof(*app));
     if (app == NULL) {
+        rt_db_close();
         ssh_finalize();
         return NULL;
     }
@@ -45,6 +56,7 @@ rt_app_t *rt_app_new(void)
     app->gtk_app = gtk_application_new(RT_APP_ID, G_APPLICATION_DEFAULT_FLAGS);
     if (app->gtk_app == NULL) {
         free(app);
+        rt_db_close();
         ssh_finalize();
         return NULL;
     }
@@ -67,5 +79,6 @@ void rt_app_free(rt_app_t *app)
         g_object_unref(app->gtk_app);
     }
     free(app);
+    rt_db_close();
     ssh_finalize();
 }

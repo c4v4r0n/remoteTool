@@ -1,15 +1,24 @@
 /*
  * Connection form: protocol / host / port / username / password +
- * Connect, plus an RDP-only options block (domain, screen size,
- * color depth, insecure-cert toggle) that appears when "RDP" is
- * picked from the protocol combo. The form has no idea what
- * "connecting" means - it just gathers input and hands it off via
- * the user-supplied submit callback. main_window owns that callback
- * and wires it to the session layer.
+ * an RDP-only options block (domain, screen size, color depth,
+ * insecure-cert toggle), and a "Save this profile" block (checkbox +
+ * name) that lets the user persist the connection alongside opening
+ * it.
+ *
+ * The form has no idea what "connecting" or "saving" means - it
+ * gathers input, decides the user's intent (CONNECT / SAVE_AND_CONNECT
+ * / SAVE), and hands it off via the submit callback. main_window
+ * wires that intent to the session and storage layers.
+ *
+ * Two construction paths:
+ *   rt_connection_form_new()           -> blank, primary action "Connect"
+ *   rt_connection_form_new_for_edit()  -> pre-populated, primary action
+ *                                         "Save changes"; saving with an
+ *                                         empty password keeps the
+ *                                         existing keyring entry.
  *
  * Password handling: the entry buffer is cleared as soon as we've
- * captured a copy. The caller (the submit callback) is responsible
- * for wiping the heap copy after use.
+ * captured a copy. The caller is responsible for wiping the heap copy.
  */
 
 #include "ui/connection_form.h"
@@ -18,14 +27,13 @@
 #include <stdlib.h>
 #include <string.h>
 
-#define RT_KEY_PROTO    "rt-proto-combo"
-#define RT_KEY_HOST     "rt-host-entry"
-#define RT_KEY_PORT     "rt-port-spin"
-#define RT_KEY_USER     "rt-user-entry"
-#define RT_KEY_PASS     "rt-pass-entry"
-#define RT_KEY_STATUS   "rt-status-label"
-#define RT_KEY_CB       "rt-submit-cb"
-#define RT_KEY_CB_USER  "rt-submit-user"
+#define RT_KEY_PROTO       "rt-proto-combo"
+#define RT_KEY_HOST        "rt-host-entry"
+#define RT_KEY_PORT        "rt-port-spin"
+#define RT_KEY_USER        "rt-user-entry"
+#define RT_KEY_PASS        "rt-pass-entry"
+#define RT_KEY_STATUS      "rt-status-label"
+#define RT_KEY_CB          "rt-submit-cb"
 
 /* RDP block + its fields. */
 #define RT_KEY_RDP_BOX        "rt-rdp-box"
@@ -35,12 +43,23 @@
 #define RT_KEY_RDP_DEPTH      "rt-rdp-depth"
 #define RT_KEY_RDP_INSECURE   "rt-rdp-insecure"
 
+/* Save-profile block. */
+#define RT_KEY_SAVE_TOGGLE    "rt-save-toggle"
+#define RT_KEY_SAVE_NAME      "rt-save-name"
+
+/* Edit-mode metadata: profile_id (uint64 stashed via g_object_set_data
+ * as GINT_TO_POINTER would clip on 32-bit, so we store it as a heap
+ * int64_t pointed to by the object data). */
+#define RT_KEY_EDIT_PROFILE_ID  "rt-edit-profile-id"
+
 typedef struct {
     rt_connection_form_submit_cb_t cb;
     void                          *user;
 } submit_ctx_t;
 
-/* ---- helpers ---- */
+/* ------------------------------------------------------------------ */
+/* Helpers                                                            */
+/* ------------------------------------------------------------------ */
 
 static GtkWidget *make_label(const char *text)
 {
@@ -59,6 +78,17 @@ static guint default_port_for(rt_protocol_t p)
     }
 }
 
+static int64_t form_get_edit_id(GtkWidget *form)
+{
+    int64_t *p = g_object_get_data(G_OBJECT(form), RT_KEY_EDIT_PROFILE_ID);
+    return (p != NULL) ? *p : 0;
+}
+
+static int form_is_edit_mode(GtkWidget *form)
+{
+    return form_get_edit_id(form) != 0;
+}
+
 static void on_proto_changed(GtkComboBox *combo, gpointer user_data)
 {
     GtkWidget *form = GTK_WIDGET(user_data);
@@ -66,20 +96,31 @@ static void on_proto_changed(GtkComboBox *combo, gpointer user_data)
     GtkWidget    *rdp  = g_object_get_data(G_OBJECT(form), RT_KEY_RDP_BOX);
 
     rt_protocol_t p = rt_protocol_from_string(gtk_combo_box_get_active_id(combo));
-    guint def = default_port_for(p);
-    if (def != 0) {
-        gtk_spin_button_set_value(port, (gdouble)def);
+    /* Only override the port when the user hasn't pinned a specific
+     * value via edit-mode pre-population. (In new-mode the port is
+     * always at the previous default so overriding is fine.) */
+    if (!form_is_edit_mode(form)) {
+        guint def = default_port_for(p);
+        if (def != 0) {
+            gtk_spin_button_set_value(port, (gdouble)def);
+        }
     }
-    /* Reveal the RDP options block only for RDP. The block has its
-     * children pre-marked visible (see end of rt_connection_form_new)
-     * so a plain show/hide on the frame is enough. */
     if (rdp != NULL) {
         gtk_widget_set_visible(rdp, p == RT_PROTOCOL_RDP);
     }
 }
 
-/* Build an rt_connection_t from the current form state. NULL on
- * empty/invalid host. */
+/* Save-toggle changed: enable/disable the Name entry alongside it. */
+static void on_save_toggled(GtkToggleButton *toggle, gpointer user_data)
+{
+    GtkWidget *name = user_data;
+    gtk_widget_set_sensitive(name, gtk_toggle_button_get_active(toggle));
+}
+
+/* ------------------------------------------------------------------ */
+/* read_form: form widgets -> rt_connection_t                         */
+/* ------------------------------------------------------------------ */
+
 static rt_connection_t *read_form(GtkWidget *form)
 {
     GtkComboBox   *proto = g_object_get_data(G_OBJECT(form), RT_KEY_PROTO);
@@ -117,7 +158,6 @@ static rt_connection_t *read_form(GtkWidget *form)
         }
     }
 
-    /* RDP options - only collected when RDP is the active protocol. */
     if (conn->protocol == RT_PROTOCOL_RDP) {
         rt_rdp_options_t *o = rt_rdp_options_new();
         if (o == NULL) {
@@ -143,7 +183,7 @@ static rt_connection_t *read_form(GtkWidget *form)
         const char *id          = gtk_combo_box_get_active_id(depth);
         o->color_depth          = (id != NULL) ? atoi(id) : 32;
         o->insecure_cert_bypass = gtk_toggle_button_get_active(inse) ? 1 : 0;
-        o->clipboard_enabled    = 1;  /* always on for now */
+        o->clipboard_enabled    = 1;
 
         conn->rdp = o;
     }
@@ -151,9 +191,11 @@ static rt_connection_t *read_form(GtkWidget *form)
     return conn;
 }
 
-/* ---- signal handlers ---- */
+/* ------------------------------------------------------------------ */
+/* Submit                                                             */
+/* ------------------------------------------------------------------ */
 
-static void on_connect_clicked(GtkButton *btn, gpointer user_data)
+static void on_submit_clicked(GtkButton *btn, gpointer user_data)
 {
     (void)btn;
     GtkWidget *form = GTK_WIDGET(user_data);
@@ -165,15 +207,55 @@ static void on_connect_clicked(GtkButton *btn, gpointer user_data)
         return;
     }
 
-    /* Capture password and immediately overwrite the entry. */
     GtkEntry *pass = g_object_get_data(G_OBJECT(form), RT_KEY_PASS);
     const char *pw_text = gtk_entry_get_text(pass);
     char *pw_copy = g_strdup(pw_text != NULL ? pw_text : "");
     gtk_entry_set_text(pass, "");
 
+    /* Decide intent + name. */
+    int64_t edit_id = form_get_edit_id(form);
+    GtkToggleButton *save_toggle =
+        g_object_get_data(G_OBJECT(form), RT_KEY_SAVE_TOGGLE);
+    GtkEntry        *save_name_entry =
+        g_object_get_data(G_OBJECT(form), RT_KEY_SAVE_NAME);
+
+    rt_form_intent_t intent;
+    const char      *save_name = NULL;
+
+    if (edit_id != 0) {
+        intent    = RT_FORM_INTENT_SAVE;
+        save_name = (save_name_entry != NULL)
+                    ? gtk_entry_get_text(save_name_entry) : NULL;
+        if (save_name == NULL || save_name[0] == '\0') {
+            if (pw_copy != NULL) {
+                memset(pw_copy, 0, strlen(pw_copy));
+                g_free(pw_copy);
+            }
+            rt_connection_free(conn);
+            rt_connection_form_show_error(form, "Name is required.");
+            return;
+        }
+    } else if (save_toggle != NULL &&
+               gtk_toggle_button_get_active(save_toggle)) {
+        intent    = RT_FORM_INTENT_SAVE_AND_CONNECT;
+        save_name = (save_name_entry != NULL)
+                    ? gtk_entry_get_text(save_name_entry) : NULL;
+        if (save_name == NULL || save_name[0] == '\0') {
+            if (pw_copy != NULL) {
+                memset(pw_copy, 0, strlen(pw_copy));
+                g_free(pw_copy);
+            }
+            rt_connection_free(conn);
+            rt_connection_form_show_error(form,
+                "A name is required to save this profile.");
+            return;
+        }
+    } else {
+        intent = RT_FORM_INTENT_CONNECT;
+    }
+
     submit_ctx_t *ctx = g_object_get_data(G_OBJECT(form), RT_KEY_CB);
     if (ctx == NULL || ctx->cb == NULL) {
-        /* No handler - clean up to avoid leaking. */
         if (pw_copy != NULL) {
             memset(pw_copy, 0, strlen(pw_copy));
             g_free(pw_copy);
@@ -182,10 +264,12 @@ static void on_connect_clicked(GtkButton *btn, gpointer user_data)
         rt_connection_form_show_error(form, "Internal error: no submit handler.");
         return;
     }
-    ctx->cb(form, conn, pw_copy, ctx->user);
+    ctx->cb(form, intent, edit_id, save_name, conn, pw_copy, ctx->user);
 }
 
-/* ---- RDP options block builder ---- */
+/* ------------------------------------------------------------------ */
+/* RDP options block                                                  */
+/* ------------------------------------------------------------------ */
 
 static GtkWidget *build_rdp_block(GtkWidget *form)
 {
@@ -199,7 +283,6 @@ static GtkWidget *build_rdp_block(GtkWidget *form)
     gtk_widget_set_margin_end   (grid, 12);
     gtk_container_add(GTK_CONTAINER(frame), grid);
 
-    /* Domain */
     GtkWidget *domain = gtk_entry_new();
     gtk_entry_set_placeholder_text(GTK_ENTRY(domain), "domain or workgroup (optional)");
     gtk_entry_set_max_length(GTK_ENTRY(domain), 128);
@@ -207,7 +290,6 @@ static GtkWidget *build_rdp_block(GtkWidget *form)
     gtk_grid_attach(GTK_GRID(grid), make_label("Domain:"), 0, 0, 1, 1);
     gtk_grid_attach(GTK_GRID(grid), domain,                  1, 0, 3, 1);
 
-    /* Width / Height */
     GtkWidget *width  = gtk_spin_button_new_with_range(640,  7680, 1);
     GtkWidget *height = gtk_spin_button_new_with_range(480,  4320, 1);
     gtk_spin_button_set_value(GTK_SPIN_BUTTON(width),  1024);
@@ -217,7 +299,6 @@ static GtkWidget *build_rdp_block(GtkWidget *form)
     gtk_grid_attach(GTK_GRID(grid), make_label("Height:"), 2, 1, 1, 1);
     gtk_grid_attach(GTK_GRID(grid), height,                 3, 1, 1, 1);
 
-    /* Color depth */
     GtkWidget *depth = gtk_combo_box_text_new();
     gtk_combo_box_text_append(GTK_COMBO_BOX_TEXT(depth), "16", "16 bpp");
     gtk_combo_box_text_append(GTK_COMBO_BOX_TEXT(depth), "24", "24 bpp");
@@ -226,12 +307,10 @@ static GtkWidget *build_rdp_block(GtkWidget *form)
     gtk_grid_attach(GTK_GRID(grid), make_label("Color depth:"), 0, 2, 1, 1);
     gtk_grid_attach(GTK_GRID(grid), depth,                       1, 2, 1, 1);
 
-    /* Insecure cert bypass (lab use only) */
     GtkWidget *insecure = gtk_check_button_new_with_label(
         "Ignore certificate validation (INSECURE - lab use only)");
     gtk_grid_attach(GTK_GRID(grid), insecure, 0, 3, 4, 1);
 
-    /* Stash widget pointers on the form. */
     g_object_set_data(G_OBJECT(form), RT_KEY_RDP_DOMAIN,   domain);
     g_object_set_data(G_OBJECT(form), RT_KEY_RDP_WIDTH,    width);
     g_object_set_data(G_OBJECT(form), RT_KEY_RDP_HEIGHT,   height);
@@ -241,11 +320,56 @@ static GtkWidget *build_rdp_block(GtkWidget *form)
     return frame;
 }
 
-/* ---- public API ---- */
+/* ------------------------------------------------------------------ */
+/* Save-profile block                                                 */
+/* ------------------------------------------------------------------ */
 
-GtkWidget *rt_connection_form_new(rt_connection_form_submit_cb_t cb,
-                                  void                          *user)
+/* Returns the GtkWidget* container; stashes the toggle + name entry
+ * on the form via the RT_KEY_SAVE_* keys. */
+static GtkWidget *build_save_block(GtkWidget *form, gboolean for_edit)
 {
+    GtkWidget *box = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 8);
+
+    GtkWidget *toggle = gtk_check_button_new_with_label("Save this profile");
+    GtkWidget *name   = gtk_entry_new();
+    gtk_entry_set_placeholder_text(GTK_ENTRY(name), "profile name (e.g. work-jumpbox)");
+    gtk_entry_set_max_length(GTK_ENTRY(name), 128);
+    gtk_widget_set_hexpand(name, TRUE);
+
+    if (for_edit) {
+        /* In edit mode there's no toggle - the form IS a save form.
+         * Hide the toggle widget but keep the name entry visible.
+         * Pre-mark the toggle "active" so the submit code reads the
+         * name unconditionally (not strictly needed since edit mode
+         * goes through a different intent path, but defensive). */
+        gtk_toggle_button_set_active(GTK_TOGGLE_BUTTON(toggle), TRUE);
+        gtk_widget_set_no_show_all(toggle, TRUE);
+        gtk_widget_hide(toggle);
+        gtk_widget_set_sensitive(name, TRUE);
+    } else {
+        gtk_widget_set_sensitive(name, FALSE);
+        g_signal_connect(toggle, "toggled",
+                         G_CALLBACK(on_save_toggled), name);
+    }
+
+    gtk_box_pack_start(GTK_BOX(box), toggle, FALSE, FALSE, 0);
+    gtk_box_pack_start(GTK_BOX(box), name,   TRUE,  TRUE,  0);
+
+    g_object_set_data(G_OBJECT(form), RT_KEY_SAVE_TOGGLE, toggle);
+    g_object_set_data(G_OBJECT(form), RT_KEY_SAVE_NAME,   name);
+    return box;
+}
+
+/* ------------------------------------------------------------------ */
+/* Form construction (shared)                                          */
+/* ------------------------------------------------------------------ */
+
+static GtkWidget *form_build(rt_connection_form_submit_cb_t cb,
+                             void                          *user,
+                             const rt_profile_t            *edit_profile)
+{
+    int for_edit = (edit_profile != NULL) ? 1 : 0;
+
     GtkWidget *grid = gtk_grid_new();
     gtk_grid_set_row_spacing(GTK_GRID(grid), 10);
     gtk_grid_set_column_spacing(GTK_GRID(grid), 14);
@@ -258,7 +382,9 @@ GtkWidget *rt_connection_form_new(rt_connection_form_submit_cb_t cb,
 
     GtkWidget *title = gtk_label_new(NULL);
     gtk_label_set_markup(GTK_LABEL(title),
-        "<span size='x-large' weight='bold'>New Connection</span>");
+        for_edit
+        ? "<span size='x-large' weight='bold'>Edit Connection</span>"
+        : "<span size='x-large' weight='bold'>New Connection</span>");
     gtk_widget_set_halign(title, GTK_ALIGN_START);
     gtk_grid_attach(GTK_GRID(grid), title, 0, 0, 2, 1);
 
@@ -290,27 +416,33 @@ GtkWidget *rt_connection_form_new(rt_connection_form_submit_cb_t cb,
     gtk_grid_attach(GTK_GRID(grid), username,                 1, 4, 1, 1);
 
     GtkWidget *password = gtk_entry_new();
-    gtk_entry_set_placeholder_text(GTK_ENTRY(password), "password");
+    gtk_entry_set_placeholder_text(GTK_ENTRY(password),
+                                   for_edit
+                                   ? "password (blank = keep existing)"
+                                   : "password");
     gtk_entry_set_visibility(GTK_ENTRY(password), FALSE);
     gtk_entry_set_input_purpose(GTK_ENTRY(password), GTK_INPUT_PURPOSE_PASSWORD);
     gtk_entry_set_max_length(GTK_ENTRY(password), 1024);
     gtk_grid_attach(GTK_GRID(grid), make_label("Password:"), 0, 5, 1, 1);
     gtk_grid_attach(GTK_GRID(grid), password,                 1, 5, 1, 1);
 
-    /* RDP options block (hidden unless RDP is the active protocol). */
     GtkWidget *rdp_block = build_rdp_block(grid);
     gtk_grid_attach(GTK_GRID(grid), rdp_block, 0, 6, 2, 1);
 
-    GtkWidget *connect_btn = gtk_button_new_with_label("Connect");
-    gtk_widget_set_halign(connect_btn, GTK_ALIGN_END);
-    gtk_style_context_add_class(gtk_widget_get_style_context(connect_btn),
+    GtkWidget *save_block = build_save_block(grid, for_edit);
+    gtk_grid_attach(GTK_GRID(grid), save_block, 0, 7, 2, 1);
+
+    GtkWidget *submit_btn = gtk_button_new_with_label(
+        for_edit ? "Save changes" : "Connect");
+    gtk_widget_set_halign(submit_btn, GTK_ALIGN_END);
+    gtk_style_context_add_class(gtk_widget_get_style_context(submit_btn),
                                 "suggested-action");
-    gtk_grid_attach(GTK_GRID(grid), connect_btn, 1, 7, 1, 1);
+    gtk_grid_attach(GTK_GRID(grid), submit_btn, 1, 8, 1, 1);
 
     GtkWidget *status = gtk_label_new("");
     gtk_label_set_xalign(GTK_LABEL(status), 0.0f);
     gtk_label_set_line_wrap(GTK_LABEL(status), TRUE);
-    gtk_grid_attach(GTK_GRID(grid), status, 0, 8, 2, 1);
+    gtk_grid_attach(GTK_GRID(grid), status, 0, 9, 2, 1);
 
     /* Stash widget pointers and the submit ctx. ctx is heap-allocated
      * so it survives the constructor return; freed when the grid is
@@ -329,29 +461,79 @@ GtkWidget *rt_connection_form_new(rt_connection_form_submit_cb_t cb,
     g_object_set_data_full(G_OBJECT(grid), RT_KEY_CB,
                            ctx, (GDestroyNotify)g_free);
 
-    g_signal_connect(proto,       "changed",
+    g_signal_connect(proto,      "changed",
                      G_CALLBACK(on_proto_changed), grid);
-    g_signal_connect(connect_btn, "clicked",
-                     G_CALLBACK(on_connect_clicked), grid);
-    /* Pressing Enter in the password field also submits. */
-    g_signal_connect(password,    "activate",
-                     G_CALLBACK(on_connect_clicked), grid);
+    g_signal_connect(submit_btn, "clicked",
+                     G_CALLBACK(on_submit_clicked), grid);
+    g_signal_connect(password,   "activate",
+                     G_CALLBACK(on_submit_clicked), grid);
 
-    /* Hide the RDP block initially (default protocol is SSH).
-     *
-     * GTK quirk: gtk_widget_set_no_show_all on the frame would also
-     * block its descendants from being marked visible, so even
-     * gtk_widget_show(frame) later would render an empty frame.
-     * Workaround: explicitly show_all the frame first (marks all
-     * children visible), THEN set no_show_all on the frame so the
-     * outer show_all doesn't undo our hide, THEN hide the frame.
-     * Toggling visibility on the frame from on_proto_changed now
-     * brings the (already-visible-marked) children along for free. */
+    /* Hide the RDP block initially. See comment in earlier phase
+     * about no_show_all + show_all ordering. */
     gtk_widget_show_all(rdp_block);
     gtk_widget_set_no_show_all(rdp_block, TRUE);
     gtk_widget_hide(rdp_block);
 
+    /* If we're editing, populate every field from the profile and
+     * stash the id so submit knows it's an UPDATE. */
+    if (for_edit) {
+        int64_t *id_box = g_new0(int64_t, 1);
+        *id_box = edit_profile->id;
+        g_object_set_data_full(G_OBJECT(grid), RT_KEY_EDIT_PROFILE_ID,
+                               id_box, g_free);
+
+        gtk_combo_box_set_active_id(
+            GTK_COMBO_BOX(proto),
+            rt_protocol_to_string(edit_profile->protocol));
+        gtk_entry_set_text(GTK_ENTRY(host), edit_profile->host ? edit_profile->host : "");
+        gtk_spin_button_set_value(GTK_SPIN_BUTTON(port),
+                                  (gdouble)edit_profile->port);
+        if (edit_profile->username != NULL) {
+            gtk_entry_set_text(GTK_ENTRY(username), edit_profile->username);
+        }
+        if (edit_profile->name != NULL) {
+            gtk_entry_set_text(
+                GTK_ENTRY(g_object_get_data(G_OBJECT(grid), RT_KEY_SAVE_NAME)),
+                edit_profile->name);
+        }
+        if (edit_profile->rdp != NULL) {
+            GtkEntry        *dom = g_object_get_data(G_OBJECT(grid), RT_KEY_RDP_DOMAIN);
+            GtkSpinButton   *w   = g_object_get_data(G_OBJECT(grid), RT_KEY_RDP_WIDTH);
+            GtkSpinButton   *h   = g_object_get_data(G_OBJECT(grid), RT_KEY_RDP_HEIGHT);
+            GtkComboBox     *d   = g_object_get_data(G_OBJECT(grid), RT_KEY_RDP_DEPTH);
+            GtkToggleButton *ins = g_object_get_data(G_OBJECT(grid), RT_KEY_RDP_INSECURE);
+
+            if (edit_profile->rdp->domain != NULL) {
+                gtk_entry_set_text(dom, edit_profile->rdp->domain);
+            }
+            gtk_spin_button_set_value(w, (gdouble)edit_profile->rdp->width);
+            gtk_spin_button_set_value(h, (gdouble)edit_profile->rdp->height);
+            char buf[8];
+            snprintf(buf, sizeof(buf), "%d", edit_profile->rdp->color_depth);
+            gtk_combo_box_set_active_id(d, buf);
+            gtk_toggle_button_set_active(ins,
+                edit_profile->rdp->insecure_cert_bypass ? TRUE : FALSE);
+        }
+    }
+
     return grid;
+}
+
+/* ------------------------------------------------------------------ */
+/* Public API                                                          */
+/* ------------------------------------------------------------------ */
+
+GtkWidget *rt_connection_form_new(rt_connection_form_submit_cb_t cb,
+                                  void                          *user)
+{
+    return form_build(cb, user, NULL);
+}
+
+GtkWidget *rt_connection_form_new_for_edit(const rt_profile_t            *p,
+                                           rt_connection_form_submit_cb_t cb,
+                                           void                          *user)
+{
+    return form_build(cb, user, p);
 }
 
 void rt_connection_form_show_error(GtkWidget *form, const char *msg)

@@ -51,6 +51,18 @@ compile_commands.json
 .claude/
 CLAUDE.md
 
+# --- User data (NEVER commit) ---------------------------------------------
+# SQLite DBs may carry connection profiles; libsecret keeps the actual
+# passwords, but hostnames + usernames are still sensitive. Be defensive
+# in case anyone copies their ~/.config/remoteTool/connections.db into
+# the repo for "easy testing".
+*.db
+*.db-journal
+*.db-wal
+*.db-shm
+*.sqlite
+*.sqlite3
+
 # --- Misc ------------------------------------------------------------------
 *.bak
 *.tmp

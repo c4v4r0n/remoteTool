@@ -110,6 +110,9 @@ install_deps() {
         libgtk-3-dev
         libvte-2.91-dev
         libssh-dev
+        # Phase 4: persistence + credential storage
+        libsqlite3-dev
+        libsecret-1-dev
         # FreeRDP build prerequisites
         cmake
         libssl-dev
@@ -254,6 +257,28 @@ build_app() {
     log "Run with: make run"
 }
 
+# Ensure the per-user config directory exists and the SQLite DB file
+# is in place. The app would lazy-init on first run anyway, but
+# pre-creating gives a stable path for backup tooling and confirms
+# the user has write access.
+init_user_data() {
+    local cfg_dir="${HOME}/.config/remoteTool"
+    local db_file="${cfg_dir}/connections.db"
+
+    log "Initializing user data at ${cfg_dir}..."
+    mkdir -p "${cfg_dir}"
+    chmod 700 "${cfg_dir}"
+    if [[ ! -f "${db_file}" ]]; then
+        # An empty SQLite file is a valid DB; the app's rt_db_open()
+        # detects PRAGMA user_version=0 and runs the schema migration.
+        : > "${db_file}"
+        chmod 600 "${db_file}"
+        log "Created empty database (schema applied on first launch): ${db_file}"
+    else
+        log "Database already exists, leaving alone: ${db_file}"
+    fi
+}
+
 # ------------------------------------------------------------------ #
 # Main
 # ------------------------------------------------------------------ #
@@ -268,6 +293,7 @@ main() {
     [[ ${SKIP_DEPS}    -eq 0 ]] && install_deps
     [[ ${SKIP_FREERDP} -eq 0 ]] && build_freerdp
     [[ ${SKIP_APP}     -eq 0 ]] && build_app
+    init_user_data
 
     log "All done."
 }
