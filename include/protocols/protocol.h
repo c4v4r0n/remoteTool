@@ -98,9 +98,14 @@ typedef struct {
     int wheel_delta;
 
     /* KEY: hardware keycode (GDK keycode == X11 keycode on Linux).
-     * Modifiers are NOT reapplied here - the back-end tracks the
-     * modifier state from the press/release stream. */
+     * RDP back-end consumes this. Modifiers are NOT reapplied here -
+     * the back-end tracks state from the press/release stream. */
     unsigned int keycode;
+
+    /* KEY: GDK keyval, identical to X11 keysym. VNC back-end consumes
+     * this (RFB transports keysyms, not scancodes). The widget fills
+     * both fields; each back-end picks the one it needs. */
+    unsigned int keysym;
 
     /* UNICODE: codepoint to inject. */
     unsigned int unicode_cp;

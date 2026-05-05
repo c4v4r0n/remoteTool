@@ -86,6 +86,7 @@ void rt_profile_free(rt_profile_t *p)
     free(p->domain);
     free(p->credential_id);
     rt_rdp_options_free(p->rdp);
+    rt_vnc_options_free(p->vnc);
     free(p);
 }
 
@@ -130,6 +131,21 @@ static rt_profile_t *profile_from_row(sqlite3_stmt *st)
     p->credential_id = col_text(st, 12);
     p->created_at    = sqlite3_column_int64(st, 13);
     p->updated_at    = sqlite3_column_int64(st, 14);
+
+    /* vnc_* columns: present together iff this is a VNC profile. The
+     * column existence comes from schema v2; older DBs are migrated. */
+    if (sqlite3_column_type(st, 15) != SQLITE_NULL) {
+        p->vnc = rt_vnc_options_new();
+        if (p->vnc == NULL) {
+            rt_profile_free(p);
+            return NULL;
+        }
+        p->vnc->view_only         = sqlite3_column_int(st, 15);
+        p->vnc->clipboard_enabled = sqlite3_column_int(st, 16);
+        const unsigned char *sm   = sqlite3_column_text(st, 17);
+        p->vnc->scale_mode_fit    = (sm != NULL && strcmp((const char *)sm, "orig") == 0)
+                                    ? 0 : 1;
+    }
     return p;
 }
 
@@ -138,7 +154,8 @@ static rt_profile_t *profile_from_row(sqlite3_stmt *st)
 #define RT_COLS \
     "id, name, protocol, host, port, username, domain, " \
     "rdp_width, rdp_height, rdp_color_depth, rdp_insecure, rdp_clipboard, " \
-    "credential_id, created_at, updated_at"
+    "credential_id, created_at, updated_at, " \
+    "vnc_view_only, vnc_clipboard, vnc_scale_mode"
 
 /* ------------------------------------------------------------------ */
 /* save (INSERT or UPDATE)                                            */
@@ -155,8 +172,11 @@ int rt_profile_save(rt_profile_t *p)
         return -1;
     }
 
-    int64_t now = (int64_t)time(NULL);
-    int has_rdp = (p->rdp != NULL) ? 1 : 0;
+    int64_t now      = (int64_t)time(NULL);
+    int     has_rdp  = (p->rdp != NULL) ? 1 : 0;
+    int     has_vnc  = (p->vnc != NULL) ? 1 : 0;
+    const char *vnc_sm = has_vnc ? (p->vnc->scale_mode_fit ? "fit" : "orig")
+                                 : NULL;
 
     sqlite3_stmt *st = NULL;
     int rc;
@@ -167,8 +187,9 @@ int rt_profile_save(rt_profile_t *p)
             "INSERT INTO connections "
             "(name, protocol, host, port, username, domain, "
             " rdp_width, rdp_height, rdp_color_depth, rdp_insecure, rdp_clipboard, "
-            " credential_id, created_at, updated_at) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);";
+            " credential_id, created_at, updated_at, "
+            " vnc_view_only, vnc_clipboard, vnc_scale_mode) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);";
         if (sqlite3_prepare_v2(db, sql, -1, &st, NULL) != SQLITE_OK) {
             return -1;
         }
@@ -186,6 +207,9 @@ int rt_profile_save(rt_profile_t *p)
         bind_text_or_null(st, 12, p->credential_id);
         sqlite3_bind_int64(st, 13, now);
         sqlite3_bind_int64(st, 14, now);
+        bind_int_or_null (st, 15, has_vnc ? p->vnc->view_only         : 0, has_vnc);
+        bind_int_or_null (st, 16, has_vnc ? p->vnc->clipboard_enabled : 0, has_vnc);
+        bind_text_or_null(st, 17, vnc_sm);
 
         rc = sqlite3_step(st);
         sqlite3_finalize(st);
@@ -204,7 +228,8 @@ int rt_profile_save(rt_profile_t *p)
         " name=?, protocol=?, host=?, port=?, username=?, domain=?, "
         " rdp_width=?, rdp_height=?, rdp_color_depth=?, "
         " rdp_insecure=?, rdp_clipboard=?, credential_id=?, "
-        " updated_at=? "
+        " updated_at=?, "
+        " vnc_view_only=?, vnc_clipboard=?, vnc_scale_mode=? "
         "WHERE id=?;";
     if (sqlite3_prepare_v2(db, sql, -1, &st, NULL) != SQLITE_OK) {
         return -1;
@@ -222,7 +247,10 @@ int rt_profile_save(rt_profile_t *p)
     bind_int_or_null (st, 11, has_rdp ? p->rdp->clipboard_enabled    : 0, has_rdp);
     bind_text_or_null(st, 12, p->credential_id);
     sqlite3_bind_int64(st, 13, now);
-    sqlite3_bind_int64(st, 14, p->id);
+    bind_int_or_null (st, 14, has_vnc ? p->vnc->view_only         : 0, has_vnc);
+    bind_int_or_null (st, 15, has_vnc ? p->vnc->clipboard_enabled : 0, has_vnc);
+    bind_text_or_null(st, 16, vnc_sm);
+    sqlite3_bind_int64(st, 17, p->id);
 
     rc = sqlite3_step(st);
     sqlite3_finalize(st);
@@ -401,6 +429,13 @@ rt_connection_t *rt_profile_to_connection(const rt_profile_t *p)
             rt_rdp_options_set_domain(c->rdp, p->domain) != 0) {
             goto fail;
         }
+    }
+    if (p->vnc != NULL) {
+        c->vnc = rt_vnc_options_new();
+        if (c->vnc == NULL) goto fail;
+        c->vnc->view_only         = p->vnc->view_only;
+        c->vnc->clipboard_enabled = p->vnc->clipboard_enabled;
+        c->vnc->scale_mode_fit    = p->vnc->scale_mode_fit;
     }
     return c;
 

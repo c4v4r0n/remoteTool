@@ -30,7 +30,12 @@ static GtkWidget *build_tab_label(const char *title, GtkWidget *content)
 
     GtkWidget *label = gtk_label_new(title);
     gtk_label_set_ellipsize(GTK_LABEL(label), PANGO_ELLIPSIZE_END);
-    gtk_label_set_max_width_chars(GTK_LABEL(label), 24);
+    /* Wide enough for "RDP some.long.fqdn.example.com" without
+     * ellipsis; longer names still collapse cleanly. */
+    gtk_label_set_max_width_chars(GTK_LABEL(label), 36);
+    gtk_label_set_width_chars    (GTK_LABEL(label), 12);  /* don't shrink below this */
+    /* Keep the full title available on hover. */
+    gtk_widget_set_tooltip_text(label, title);
 
     GtkWidget *close = gtk_button_new_from_icon_name(
         "window-close-symbolic", GTK_ICON_SIZE_MENU);

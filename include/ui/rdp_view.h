@@ -61,4 +61,9 @@ void rt_rdp_view_set_remote_clipboard(rt_rdp_view_t *v,
  * used while the connection is still being established. */
 void rt_rdp_view_set_input_enabled(rt_rdp_view_t *v, gboolean enabled);
 
+/* Show/hide the top toolbar (status, "Send Keys", scale combo).
+ * Hidden in fullscreen-style modes so the canvas can use the freed
+ * vertical space. */
+void rt_rdp_view_set_chrome_visible(rt_rdp_view_t *v, gboolean visible);
+
 #endif /* RT_UI_RDP_VIEW_H */

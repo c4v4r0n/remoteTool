@@ -43,6 +43,12 @@
 #define RT_KEY_RDP_DEPTH      "rt-rdp-depth"
 #define RT_KEY_RDP_INSECURE   "rt-rdp-insecure"
 
+/* VNC block + its fields. */
+#define RT_KEY_VNC_BOX        "rt-vnc-box"
+#define RT_KEY_VNC_VIEWONLY   "rt-vnc-viewonly"
+#define RT_KEY_VNC_CLIPBOARD  "rt-vnc-clipboard"
+#define RT_KEY_VNC_SCALE      "rt-vnc-scale"
+
 /* Save-profile block. */
 #define RT_KEY_SAVE_TOGGLE    "rt-save-toggle"
 #define RT_KEY_SAVE_NAME      "rt-save-name"
@@ -94,20 +100,17 @@ static void on_proto_changed(GtkComboBox *combo, gpointer user_data)
     GtkWidget *form = GTK_WIDGET(user_data);
     GtkSpinButton *port = g_object_get_data(G_OBJECT(form), RT_KEY_PORT);
     GtkWidget    *rdp  = g_object_get_data(G_OBJECT(form), RT_KEY_RDP_BOX);
+    GtkWidget    *vnc  = g_object_get_data(G_OBJECT(form), RT_KEY_VNC_BOX);
 
     rt_protocol_t p = rt_protocol_from_string(gtk_combo_box_get_active_id(combo));
-    /* Only override the port when the user hasn't pinned a specific
-     * value via edit-mode pre-population. (In new-mode the port is
-     * always at the previous default so overriding is fine.) */
     if (!form_is_edit_mode(form)) {
         guint def = default_port_for(p);
         if (def != 0) {
             gtk_spin_button_set_value(port, (gdouble)def);
         }
     }
-    if (rdp != NULL) {
-        gtk_widget_set_visible(rdp, p == RT_PROTOCOL_RDP);
-    }
+    if (rdp != NULL) gtk_widget_set_visible(rdp, p == RT_PROTOCOL_RDP);
+    if (vnc != NULL) gtk_widget_set_visible(vnc, p == RT_PROTOCOL_VNC);
 }
 
 /* Save-toggle changed: enable/disable the Name entry alongside it. */
@@ -186,6 +189,23 @@ static rt_connection_t *read_form(GtkWidget *form)
         o->clipboard_enabled    = 1;
 
         conn->rdp = o;
+    }
+
+    if (conn->protocol == RT_PROTOCOL_VNC) {
+        rt_vnc_options_t *o = rt_vnc_options_new();
+        if (o == NULL) {
+            rt_connection_free(conn);
+            return NULL;
+        }
+        GtkToggleButton *vo  = g_object_get_data(G_OBJECT(form), RT_KEY_VNC_VIEWONLY);
+        GtkToggleButton *cb  = g_object_get_data(G_OBJECT(form), RT_KEY_VNC_CLIPBOARD);
+        GtkComboBox     *sm  = g_object_get_data(G_OBJECT(form), RT_KEY_VNC_SCALE);
+
+        o->view_only         = gtk_toggle_button_get_active(vo) ? 1 : 0;
+        o->clipboard_enabled = gtk_toggle_button_get_active(cb) ? 1 : 0;
+        const char *sm_id    = gtk_combo_box_get_active_id(sm);
+        o->scale_mode_fit    = (sm_id != NULL && strcmp(sm_id, "orig") == 0) ? 0 : 1;
+        conn->vnc = o;
     }
 
     return conn;
@@ -321,6 +341,44 @@ static GtkWidget *build_rdp_block(GtkWidget *form)
 }
 
 /* ------------------------------------------------------------------ */
+/* VNC options block                                                  */
+/* ------------------------------------------------------------------ */
+
+static GtkWidget *build_vnc_block(GtkWidget *form)
+{
+    GtkWidget *frame = gtk_frame_new("VNC Options");
+    GtkWidget *grid  = gtk_grid_new();
+    gtk_grid_set_row_spacing(GTK_GRID(grid), 8);
+    gtk_grid_set_column_spacing(GTK_GRID(grid), 12);
+    gtk_widget_set_margin_top   (grid, 10);
+    gtk_widget_set_margin_bottom(grid, 10);
+    gtk_widget_set_margin_start (grid, 12);
+    gtk_widget_set_margin_end   (grid, 12);
+    gtk_container_add(GTK_CONTAINER(frame), grid);
+
+    GtkWidget *view_only = gtk_check_button_new_with_label(
+        "View only (suppress all keyboard / mouse forwarding)");
+    gtk_grid_attach(GTK_GRID(grid), view_only, 0, 0, 2, 1);
+
+    GtkWidget *clipboard = gtk_check_button_new_with_label(
+        "Sync clipboard text (RFB cut-text)");
+    gtk_toggle_button_set_active(GTK_TOGGLE_BUTTON(clipboard), TRUE);
+    gtk_grid_attach(GTK_GRID(grid), clipboard, 0, 1, 2, 1);
+
+    GtkWidget *scale = gtk_combo_box_text_new();
+    gtk_combo_box_text_append(GTK_COMBO_BOX_TEXT(scale), "fit",  "Scale to fit");
+    gtk_combo_box_text_append(GTK_COMBO_BOX_TEXT(scale), "orig", "Original size");
+    gtk_combo_box_set_active_id(GTK_COMBO_BOX(scale), "fit");
+    gtk_grid_attach(GTK_GRID(grid), make_label("Scaling:"), 0, 2, 1, 1);
+    gtk_grid_attach(GTK_GRID(grid), scale,                   1, 2, 1, 1);
+
+    g_object_set_data(G_OBJECT(form), RT_KEY_VNC_VIEWONLY,  view_only);
+    g_object_set_data(G_OBJECT(form), RT_KEY_VNC_CLIPBOARD, clipboard);
+    g_object_set_data(G_OBJECT(form), RT_KEY_VNC_SCALE,     scale);
+    return frame;
+}
+
+/* ------------------------------------------------------------------ */
 /* Save-profile block                                                 */
 /* ------------------------------------------------------------------ */
 
@@ -391,7 +449,7 @@ static GtkWidget *form_build(rt_connection_form_submit_cb_t cb,
     GtkWidget *proto = gtk_combo_box_text_new();
     gtk_combo_box_text_append(GTK_COMBO_BOX_TEXT(proto), "ssh", "SSH");
     gtk_combo_box_text_append(GTK_COMBO_BOX_TEXT(proto), "rdp", "RDP");
-    gtk_combo_box_text_append(GTK_COMBO_BOX_TEXT(proto), "vnc", "VNC (TODO)");
+    gtk_combo_box_text_append(GTK_COMBO_BOX_TEXT(proto), "vnc", "VNC");
     gtk_combo_box_set_active_id(GTK_COMBO_BOX(proto), "ssh");
     gtk_grid_attach(GTK_GRID(grid), make_label("Protocol:"), 0, 1, 1, 1);
     gtk_grid_attach(GTK_GRID(grid), proto,                    1, 1, 1, 1);
@@ -429,20 +487,23 @@ static GtkWidget *form_build(rt_connection_form_submit_cb_t cb,
     GtkWidget *rdp_block = build_rdp_block(grid);
     gtk_grid_attach(GTK_GRID(grid), rdp_block, 0, 6, 2, 1);
 
+    GtkWidget *vnc_block = build_vnc_block(grid);
+    gtk_grid_attach(GTK_GRID(grid), vnc_block, 0, 7, 2, 1);
+
     GtkWidget *save_block = build_save_block(grid, for_edit);
-    gtk_grid_attach(GTK_GRID(grid), save_block, 0, 7, 2, 1);
+    gtk_grid_attach(GTK_GRID(grid), save_block, 0, 8, 2, 1);
 
     GtkWidget *submit_btn = gtk_button_new_with_label(
         for_edit ? "Save changes" : "Connect");
     gtk_widget_set_halign(submit_btn, GTK_ALIGN_END);
     gtk_style_context_add_class(gtk_widget_get_style_context(submit_btn),
                                 "suggested-action");
-    gtk_grid_attach(GTK_GRID(grid), submit_btn, 1, 8, 1, 1);
+    gtk_grid_attach(GTK_GRID(grid), submit_btn, 1, 9, 1, 1);
 
     GtkWidget *status = gtk_label_new("");
     gtk_label_set_xalign(GTK_LABEL(status), 0.0f);
     gtk_label_set_line_wrap(GTK_LABEL(status), TRUE);
-    gtk_grid_attach(GTK_GRID(grid), status, 0, 9, 2, 1);
+    gtk_grid_attach(GTK_GRID(grid), status, 0, 10, 2, 1);
 
     /* Stash widget pointers and the submit ctx. ctx is heap-allocated
      * so it survives the constructor return; freed when the grid is
@@ -458,6 +519,7 @@ static GtkWidget *form_build(rt_connection_form_submit_cb_t cb,
     g_object_set_data     (G_OBJECT(grid), RT_KEY_PASS,    password);
     g_object_set_data     (G_OBJECT(grid), RT_KEY_STATUS,  status);
     g_object_set_data     (G_OBJECT(grid), RT_KEY_RDP_BOX, rdp_block);
+    g_object_set_data     (G_OBJECT(grid), RT_KEY_VNC_BOX, vnc_block);
     g_object_set_data_full(G_OBJECT(grid), RT_KEY_CB,
                            ctx, (GDestroyNotify)g_free);
 
@@ -468,11 +530,14 @@ static GtkWidget *form_build(rt_connection_form_submit_cb_t cb,
     g_signal_connect(password,   "activate",
                      G_CALLBACK(on_submit_clicked), grid);
 
-    /* Hide the RDP block initially. See comment in earlier phase
-     * about no_show_all + show_all ordering. */
+    /* Hide both protocol-specific blocks initially. See earlier-phase
+     * comment about no_show_all + show_all ordering. */
     gtk_widget_show_all(rdp_block);
     gtk_widget_set_no_show_all(rdp_block, TRUE);
     gtk_widget_hide(rdp_block);
+    gtk_widget_show_all(vnc_block);
+    gtk_widget_set_no_show_all(vnc_block, TRUE);
+    gtk_widget_hide(vnc_block);
 
     /* If we're editing, populate every field from the profile and
      * stash the id so submit knows it's an UPDATE. */
@@ -513,6 +578,17 @@ static GtkWidget *form_build(rt_connection_form_submit_cb_t cb,
             gtk_combo_box_set_active_id(d, buf);
             gtk_toggle_button_set_active(ins,
                 edit_profile->rdp->insecure_cert_bypass ? TRUE : FALSE);
+        }
+        if (edit_profile->vnc != NULL) {
+            GtkToggleButton *vo   = g_object_get_data(G_OBJECT(grid), RT_KEY_VNC_VIEWONLY);
+            GtkToggleButton *clip = g_object_get_data(G_OBJECT(grid), RT_KEY_VNC_CLIPBOARD);
+            GtkComboBox     *sm   = g_object_get_data(G_OBJECT(grid), RT_KEY_VNC_SCALE);
+            gtk_toggle_button_set_active(vo,
+                edit_profile->vnc->view_only ? TRUE : FALSE);
+            gtk_toggle_button_set_active(clip,
+                edit_profile->vnc->clipboard_enabled ? TRUE : FALSE);
+            gtk_combo_box_set_active_id(sm,
+                edit_profile->vnc->scale_mode_fit ? "fit" : "orig");
         }
     }
 

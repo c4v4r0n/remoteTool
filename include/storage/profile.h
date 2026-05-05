@@ -31,6 +31,7 @@ typedef struct {
     char             *username;       /* may be NULL */
     char             *domain;         /* may be NULL (RDP only) */
     rt_rdp_options_t *rdp;            /* NULL unless protocol == RDP */
+    rt_vnc_options_t *vnc;            /* NULL unless protocol == VNC */
     char             *credential_id;  /* libsecret key, NULL if no saved password */
     int64_t           created_at;     /* unix epoch */
     int64_t           updated_at;

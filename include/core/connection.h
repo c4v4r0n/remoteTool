@@ -35,12 +35,21 @@ typedef struct {
     int   clipboard_enabled;   /* 0/1 - default 1 (CLIPRDR text only) */
 } rt_rdp_options_t;
 
+/* VNC-specific options. Defaults from rt_vnc_options_new():
+ * view_only=0, clipboard_enabled=1, scale_mode_fit=1. */
+typedef struct {
+    int  view_only;            /* 0/1 - if 1, no input forwarded to remote */
+    int  clipboard_enabled;    /* 0/1 - text cut/paste both directions     */
+    int  scale_mode_fit;       /* 0=Original, 1=Scale to fit (default UI) */
+} rt_vnc_options_t;
+
 typedef struct {
     rt_protocol_t      protocol;
     char              *host;      /* heap, owned */
     unsigned short     port;
     char              *username;  /* heap, owned, may be NULL */
     rt_rdp_options_t  *rdp;       /* heap, owned, NULL unless RDP */
+    rt_vnc_options_t  *vnc;       /* heap, owned, NULL unless VNC */
 } rt_connection_t;
 
 rt_connection_t *rt_connection_new(void);
@@ -57,6 +66,11 @@ rt_rdp_options_t *rt_rdp_options_new(void);
 void              rt_rdp_options_free(rt_rdp_options_t *opts);
 int               rt_rdp_options_set_domain(rt_rdp_options_t *opts,
                                             const char *domain);
+
+/* VNC options helpers. Defaults: view_only OFF, clipboard ON,
+ * scale-mode = fit. Returns NULL on allocation failure. */
+rt_vnc_options_t *rt_vnc_options_new(void);
+void              rt_vnc_options_free(rt_vnc_options_t *opts);
 
 const char   *rt_protocol_to_string(rt_protocol_t p);
 rt_protocol_t rt_protocol_from_string(const char *s);

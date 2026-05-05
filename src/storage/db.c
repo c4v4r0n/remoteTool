@@ -23,10 +23,11 @@
 #include <sys/stat.h>
 #include <sys/types.h>
 
-#define RT_DB_SCHEMA_VERSION 1
+#define RT_DB_SCHEMA_VERSION 2
 
 /* Per-version migration SQL. MIGRATIONS[i] is the SQL that takes the
- * DB from version i to version i+1. */
+ * DB from version i to version i+1. NEVER edit existing entries -
+ * append a new one and bump RT_DB_SCHEMA_VERSION. */
 static const char *const MIGRATIONS[] = {
     /* v0 -> v1: initial schema. */
     "CREATE TABLE connections ("
@@ -47,6 +48,11 @@ static const char *const MIGRATIONS[] = {
     "  updated_at      INTEGER NOT NULL"
     ");"
     "CREATE INDEX idx_connections_name ON connections(name);",
+
+    /* v1 -> v2: VNC profile fields. Additive ALTERs, NULL on old rows. */
+    "ALTER TABLE connections ADD COLUMN vnc_view_only  INTEGER;"
+    "ALTER TABLE connections ADD COLUMN vnc_clipboard  INTEGER;"
+    "ALTER TABLE connections ADD COLUMN vnc_scale_mode TEXT;",
 };
 
 static sqlite3 *g_db = NULL;

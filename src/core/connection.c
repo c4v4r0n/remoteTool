@@ -36,6 +36,7 @@ void rt_connection_free(rt_connection_t *conn)
     free(conn->host);
     free(conn->username);
     rt_rdp_options_free(conn->rdp);
+    rt_vnc_options_free(conn->vnc);
     free(conn);
 }
 
@@ -96,6 +97,23 @@ int rt_rdp_options_set_domain(rt_rdp_options_t *opts, const char *domain)
     free(opts->domain);
     opts->domain = copy;
     return 0;
+}
+
+rt_vnc_options_t *rt_vnc_options_new(void)
+{
+    rt_vnc_options_t *o = calloc(1, sizeof(*o));
+    if (o == NULL) {
+        return NULL;
+    }
+    o->view_only         = 0;
+    o->clipboard_enabled = 1;
+    o->scale_mode_fit    = 1;
+    return o;
+}
+
+void rt_vnc_options_free(rt_vnc_options_t *opts)
+{
+    free(opts);
 }
 
 const char *rt_protocol_to_string(rt_protocol_t p)

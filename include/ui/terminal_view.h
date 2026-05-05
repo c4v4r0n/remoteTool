@@ -37,6 +37,10 @@ void rt_terminal_set_status(rt_terminal_t *t, const char *status);
 /* When disabled, the terminal stops accepting keystrokes. */
 void rt_terminal_set_input_enabled(rt_terminal_t *t, gboolean enabled);
 
+/* Show/hide the top status label. Used in fullscreen mode so the
+ * terminal canvas can use the freed vertical space. */
+void rt_terminal_set_chrome_visible(rt_terminal_t *t, gboolean visible);
+
 void rt_terminal_set_input_handler (rt_terminal_t *t,
                                     rt_terminal_input_cb_t cb, void *user);
 void rt_terminal_set_resize_handler(rt_terminal_t *t,

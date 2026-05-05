@@ -28,6 +28,7 @@
 #include "ui/connection_dialog.h"
 #include "ui/terminal_view.h"
 #include "ui/rdp_view.h"
+#include "ui/vnc_view.h"
 #include "core/session.h"
 #include "core/connection.h"
 #include "storage/profile.h"
@@ -42,6 +43,10 @@
 #define RT_WINDOW_DEFAULT_HEIGHT 720
 #define RT_NEW_TAB_TITLE         "New Connection"
 #define RT_EDIT_TAB_TITLE        "Edit Connection"
+
+/* Per-window state keys. */
+#define RT_KEY_FULLSCREEN        "rt-fullscreen-state"
+#define RT_KEY_HEADER_BAR        "rt-header-bar"
 
 /* ------------------------------------------------------------------ */
 /* tab_bundle_t: per-connected-tab cleanup hook                       */
@@ -149,6 +154,32 @@ static void rdp_on_clipboard_text(void *user, const char *utf8, size_t len)
 }
 
 /* ------------------------------------------------------------------ */
+/* VNC viewer wiring                                                  */
+/* ------------------------------------------------------------------ */
+
+static void vnc_on_state(void *user, rt_proto_state_t state, const char *msg)
+{
+    rt_vnc_view_t *v = user;
+    char buf[256];
+    make_status_line(buf, sizeof(buf), state, msg);
+    rt_vnc_view_set_status(v, buf);
+    rt_vnc_view_set_input_enabled(v, state == RT_PROTO_STATE_CONNECTED);
+}
+
+static void vnc_on_frame(void *user, const rt_remote_frame_t *frame)
+{
+    rt_vnc_view_t *v = user;
+    rt_vnc_view_on_frame(v, frame->width, frame->height,
+                         frame->dirty_x, frame->dirty_y,
+                         frame->dirty_w, frame->dirty_h);
+}
+
+static void vnc_on_clipboard_text(void *user, const char *utf8, size_t len)
+{
+    rt_vnc_view_set_remote_clipboard((rt_vnc_view_t *)user, utf8, len);
+}
+
+/* ------------------------------------------------------------------ */
 /* Per-protocol session bring-up                                      */
 /* ------------------------------------------------------------------ */
 
@@ -201,6 +232,38 @@ static GtkWidget *build_rdp_session(rt_connection_t *conn,
     return rt_rdp_view_get_widget(view);
 }
 
+static GtkWidget *build_vnc_session(rt_connection_t *conn,
+                                    char            *password,
+                                    rt_session_t   **out_session)
+{
+    rt_vnc_view_t *view = rt_vnc_view_new(NULL);
+    rt_vnc_view_set_status(view, "[connecting]");
+
+    /* Apply persisted scale-mode preference (if the connection came
+     * from a saved profile that recorded one). Defaults stay if not. */
+    if (conn->vnc != NULL) {
+        rt_vnc_view_set_scale_mode(view,
+            conn->vnc->scale_mode_fit ? RT_VNC_SCALE_TO_FIT
+                                       : RT_VNC_SCALE_ORIGINAL);
+    }
+
+    rt_session_ui_callbacks_t ui = {
+        .on_state          = vnc_on_state,
+        .on_frame          = vnc_on_frame,
+        .on_clipboard_text = vnc_on_clipboard_text,
+    };
+    rt_session_t *session = rt_session_new(conn, password, &ui, view);
+    if (session == NULL) {
+        gtk_widget_destroy(rt_vnc_view_get_widget(view));
+        *out_session = NULL;
+        return NULL;
+    }
+    rt_vnc_view_set_session(view, session);
+
+    *out_session = session;
+    return rt_vnc_view_get_widget(view);
+}
+
 /* Open a session and either replace `current_widget` (if non-NULL,
  * usually a form) with the viewer or push it as a new tab. Takes
  * ownership of `conn` and `password` regardless of outcome. */
@@ -218,6 +281,9 @@ static int start_session(rt_tab_manager_t *tm,
         break;
     case RT_PROTOCOL_RDP:
         viewer = build_rdp_session(conn, password, &session);
+        break;
+    case RT_PROTOCOL_VNC:
+        viewer = build_vnc_session(conn, password, &session);
         break;
     default:
         wipe_and_free(password);
@@ -239,11 +305,21 @@ static int start_session(rt_tab_manager_t *tm,
     g_object_set_data_full(G_OBJECT(viewer), "rt-tab-bundle",
                            bundle, bundle_destroy);
 
+    /* Tab title: "PROTOCOL host" (e.g. "RDP dc01.contoso.com").
+     * Protocol is uppercased; rt_protocol_to_string returns lowercase
+     * ("ssh"/"rdp") so we transform inline. */
     const rt_connection_t *c = rt_session_connection(session);
+    const char *proto_lc = rt_protocol_to_string(c->protocol);
+    char proto_uc[8];
+    size_t pi = 0;
+    for (; proto_lc[pi] != '\0' && pi + 1 < sizeof(proto_uc); pi++) {
+        proto_uc[pi] = (char)((proto_lc[pi] >= 'a' && proto_lc[pi] <= 'z')
+                              ? proto_lc[pi] - 32 : proto_lc[pi]);
+    }
+    proto_uc[pi] = '\0';
     char title[128];
-    snprintf(title, sizeof(title), "%s@%s",
-             (c->username && c->username[0]) ? c->username
-                                             : rt_protocol_to_string(c->protocol),
+    snprintf(title, sizeof(title), "%s %s",
+             proto_uc,
              c->host ? c->host : "?");
 
     if (current_widget != NULL) {
@@ -293,6 +369,12 @@ static int persist_new_profile(const rt_connection_t *conn,
             p->domain = g_strdup(conn->rdp->domain);
             rt_rdp_options_set_domain(p->rdp, conn->rdp->domain);
         }
+    }
+    if (conn->vnc != NULL) {
+        p->vnc = rt_vnc_options_new();
+        p->vnc->view_only         = conn->vnc->view_only;
+        p->vnc->clipboard_enabled = conn->vnc->clipboard_enabled;
+        p->vnc->scale_mode_fit    = conn->vnc->scale_mode_fit;
     }
     /* Allocate a credential id only when there's actually a password
      * to store. Empty passwords stay un-keyringed. */
@@ -361,6 +443,16 @@ static int persist_edit_profile(int64_t                profile_id,
         p->rdp = NULL;
         g_free(p->domain);
         p->domain = NULL;
+    }
+
+    if (conn->vnc != NULL) {
+        if (p->vnc == NULL) p->vnc = rt_vnc_options_new();
+        p->vnc->view_only         = conn->vnc->view_only;
+        p->vnc->clipboard_enabled = conn->vnc->clipboard_enabled;
+        p->vnc->scale_mode_fit    = conn->vnc->scale_mode_fit;
+    } else {
+        rt_vnc_options_free(p->vnc);
+        p->vnc = NULL;
     }
 
     /* Replace credential iff user typed a new password. */
@@ -479,6 +571,84 @@ static void on_dialog_edit(int64_t profile_id, void *user)
 }
 
 /* ------------------------------------------------------------------ */
+/* Fullscreen toggle                                                  */
+/* ------------------------------------------------------------------ */
+
+/* Apply the chrome-visible flag to every viewer currently in the
+ * notebook. Walks every page and dispatches based on which wrapper
+ * type the page widget carries. */
+static void apply_chrome_to_all_tabs(rt_tab_manager_t *tm, gboolean visible)
+{
+    GtkNotebook *nb = GTK_NOTEBOOK(rt_tab_manager_get_widget(tm));
+    gint n = gtk_notebook_get_n_pages(nb);
+    for (gint i = 0; i < n; i++) {
+        GtkWidget *page = gtk_notebook_get_nth_page(nb, i);
+        if (page == NULL) continue;
+        rt_rdp_view_t *rv = g_object_get_data(G_OBJECT(page), "rt-rdp-view-wrapper");
+        if (rv != NULL) {
+            rt_rdp_view_set_chrome_visible(rv, visible);
+            continue;
+        }
+        rt_vnc_view_t *vv = g_object_get_data(G_OBJECT(page), "rt-vnc-view-wrapper");
+        if (vv != NULL) {
+            rt_vnc_view_set_chrome_visible(vv, visible);
+            continue;
+        }
+        rt_terminal_t *t = g_object_get_data(G_OBJECT(page), "rt-terminal-wrapper");
+        if (t != NULL) {
+            rt_terminal_set_chrome_visible(t, visible);
+        }
+        /* Form/edit pages don't need chrome toggling. */
+    }
+}
+
+/* Toggle fullscreen presentation: window goes fullscreen, header bar
+ * disappears, notebook hides its tab strip, and every viewer hides
+ * its top toolbar. F11 (or the header button when chrome is back)
+ * exits. State lives on the window via RT_KEY_FULLSCREEN. */
+static void toggle_fullscreen(GtkWindow *win)
+{
+    if (win == NULL) return;
+    rt_tab_manager_t *tm = g_object_get_data(G_OBJECT(win), "rt-tab-manager");
+    GtkWidget        *hb = g_object_get_data(G_OBJECT(win), RT_KEY_HEADER_BAR);
+    gboolean         *fs = g_object_get_data(G_OBJECT(win), RT_KEY_FULLSCREEN);
+    if (tm == NULL || fs == NULL) return;
+
+    *fs = !*fs;
+
+    if (*fs) {
+        gtk_window_fullscreen(win);
+        if (hb != NULL) gtk_widget_hide(hb);
+        gtk_notebook_set_show_tabs(
+            GTK_NOTEBOOK(rt_tab_manager_get_widget(tm)), FALSE);
+        apply_chrome_to_all_tabs(tm, FALSE);
+    } else {
+        gtk_window_unfullscreen(win);
+        if (hb != NULL) gtk_widget_show(hb);
+        gtk_notebook_set_show_tabs(
+            GTK_NOTEBOOK(rt_tab_manager_get_widget(tm)), TRUE);
+        apply_chrome_to_all_tabs(tm, TRUE);
+    }
+}
+
+static gboolean on_window_key_press(GtkWidget *w, GdkEventKey *e, gpointer user)
+{
+    (void)user;
+    if (e->keyval == GDK_KEY_F11) {
+        toggle_fullscreen(GTK_WINDOW(w));
+        return TRUE;
+    }
+    return FALSE;
+}
+
+static void on_fullscreen_clicked(GtkButton *btn, gpointer user_data)
+{
+    (void)user_data;
+    GtkWindow *win = toplevel_window(GTK_WIDGET(btn));
+    toggle_fullscreen(win);
+}
+
+/* ------------------------------------------------------------------ */
 /* Header bar / window construction                                   */
 /* ------------------------------------------------------------------ */
 
@@ -521,6 +691,18 @@ static GtkWidget *build_header_bar(rt_tab_manager_t *tm)
                      G_CALLBACK(on_saved_clicked), tm);
     gtk_header_bar_pack_start(GTK_HEADER_BAR(header), saved_btn);
 
+    /* Fullscreen toggle. Hides the tab strip + each viewer's chrome
+     * so the remote canvas takes the whole window. F11 also toggles
+     * (handled at the window level so it works even when the header
+     * bar is hidden). */
+    GtkWidget *fs_btn = gtk_button_new_from_icon_name(
+        "view-fullscreen-symbolic", GTK_ICON_SIZE_BUTTON);
+    gtk_widget_set_tooltip_text(fs_btn,
+        "Toggle fullscreen (F11)");
+    g_signal_connect(fs_btn, "clicked",
+                     G_CALLBACK(on_fullscreen_clicked), NULL);
+    gtk_header_bar_pack_end(GTK_HEADER_BAR(header), fs_btn);
+
     return header;
 }
 
@@ -541,8 +723,21 @@ GtkWidget *rt_main_window_new(GtkApplication *app)
     g_object_set_data_full(G_OBJECT(win), "rt-tab-manager",
                            tm, tab_manager_destroy_cb);
 
-    gtk_window_set_titlebar(GTK_WINDOW(win), build_header_bar(tm));
+    GtkWidget *header = build_header_bar(tm);
+    gtk_window_set_titlebar(GTK_WINDOW(win), header);
     gtk_container_add(GTK_CONTAINER(win), rt_tab_manager_get_widget(tm));
+
+    /* Per-window fullscreen state + a stable handle to the header
+     * bar so toggle_fullscreen can show/hide it. */
+    gboolean *fs_state = g_new0(gboolean, 1);
+    *fs_state = FALSE;
+    g_object_set_data_full(G_OBJECT(win), RT_KEY_FULLSCREEN,
+                           fs_state, g_free);
+    g_object_set_data(G_OBJECT(win), RT_KEY_HEADER_BAR, header);
+
+    /* F11 toggles fullscreen even when the header is hidden. */
+    g_signal_connect(win, "key-press-event",
+                     G_CALLBACK(on_window_key_press), NULL);
 
     /* Open one connection tab on launch so the UI isn't empty. */
     GtkWidget *form = rt_connection_form_new(on_form_submit, tm);

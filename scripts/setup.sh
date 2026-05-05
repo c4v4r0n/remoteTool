@@ -113,6 +113,8 @@ install_deps() {
         # Phase 4: persistence + credential storage
         libsqlite3-dev
         libsecret-1-dev
+        # Phase 5: VNC client (provides libvncclient + libvncserver headers)
+        libvncserver-dev
         # FreeRDP build prerequisites
         cmake
         libssl-dev

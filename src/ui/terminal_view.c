@@ -180,6 +180,14 @@ void rt_terminal_set_input_enabled(rt_terminal_t *t, gboolean enabled)
     }
 }
 
+void rt_terminal_set_chrome_visible(rt_terminal_t *t, gboolean visible)
+{
+    if (t == NULL || t->status == NULL) {
+        return;
+    }
+    gtk_widget_set_visible(t->status, visible);
+}
+
 void rt_terminal_set_input_handler(rt_terminal_t         *t,
                                    rt_terminal_input_cb_t cb,
                                    void                  *user)
