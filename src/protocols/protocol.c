@@ -14,6 +14,7 @@
 #include "protocols/ssh/ssh_protocol.h"
 #include "protocols/rdp/rdp_protocol.h"
 #include "protocols/vnc/vnc_protocol.h"
+#include "protocols/winrm/winrm_protocol.h"
 
 const uint8_t *rt_remote_framebuffer_lock(rt_remote_framebuffer_t *fb,
                                           int *out_width,
@@ -52,9 +53,10 @@ const char *rt_proto_state_to_string(rt_proto_state_t s)
 const rt_protocol_ops_t *rt_protocol_lookup(rt_protocol_t protocol)
 {
     switch (protocol) {
-    case RT_PROTOCOL_SSH: return rt_ssh_get_ops();
-    case RT_PROTOCOL_RDP: return rt_rdp_get_ops();
-    case RT_PROTOCOL_VNC: return rt_vnc_get_ops();
+    case RT_PROTOCOL_SSH:   return rt_ssh_get_ops();
+    case RT_PROTOCOL_RDP:   return rt_rdp_get_ops();
+    case RT_PROTOCOL_VNC:   return rt_vnc_get_ops();
+    case RT_PROTOCOL_WINRM: return rt_winrm_get_ops();
     case RT_PROTOCOL_NONE:
     default:
         return NULL;

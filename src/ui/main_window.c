@@ -29,6 +29,7 @@
 #include "ui/terminal_view.h"
 #include "ui/rdp_view.h"
 #include "ui/vnc_view.h"
+#include "ui/winrm_view.h"
 #include "core/session.h"
 #include "core/connection.h"
 #include "storage/profile.h"
@@ -180,6 +181,29 @@ static void vnc_on_clipboard_text(void *user, const char *utf8, size_t len)
 }
 
 /* ------------------------------------------------------------------ */
+/* WinRM viewer wiring                                                */
+/* ------------------------------------------------------------------ */
+
+static void winrm_on_data(void *user, const char *data, size_t len)
+{
+    rt_winrm_view_feed_output((rt_winrm_view_t *)user, data, len);
+}
+
+static void winrm_on_state(void *user, rt_proto_state_t state, const char *msg)
+{
+    rt_winrm_view_t *v = user;
+    char buf[256];
+    make_status_line(buf, sizeof(buf), state, msg);
+    rt_winrm_view_set_status(v, buf);
+    rt_winrm_view_set_input_enabled(v, state == RT_PROTO_STATE_CONNECTED);
+}
+
+static void winrm_on_view_input(const char *bytes, size_t len, void *user)
+{
+    rt_session_send_data((rt_session_t *)user, bytes, len);
+}
+
+/* ------------------------------------------------------------------ */
 /* Per-protocol session bring-up                                      */
 /* ------------------------------------------------------------------ */
 
@@ -264,6 +288,30 @@ static GtkWidget *build_vnc_session(rt_connection_t *conn,
     return rt_vnc_view_get_widget(view);
 }
 
+static GtkWidget *build_winrm_session(rt_connection_t *conn,
+                                      char            *password,
+                                      rt_session_t   **out_session)
+{
+    rt_winrm_view_t *view = rt_winrm_view_new();
+    rt_winrm_view_set_status(view, "[connecting]");
+
+    rt_session_ui_callbacks_t ui = {
+        .on_data  = winrm_on_data,
+        .on_state = winrm_on_state,
+    };
+    rt_session_t *session = rt_session_new(conn, password, &ui, view);
+    if (session == NULL) {
+        gtk_widget_destroy(rt_winrm_view_get_widget(view));
+        *out_session = NULL;
+        return NULL;
+    }
+
+    rt_winrm_view_set_input_handler(view, winrm_on_view_input, session);
+
+    *out_session = session;
+    return rt_winrm_view_get_widget(view);
+}
+
 /* Open a session and either replace `current_widget` (if non-NULL,
  * usually a form) with the viewer or push it as a new tab. Takes
  * ownership of `conn` and `password` regardless of outcome. */
@@ -284,6 +332,9 @@ static int start_session(rt_tab_manager_t *tm,
         break;
     case RT_PROTOCOL_VNC:
         viewer = build_vnc_session(conn, password, &session);
+        break;
+    case RT_PROTOCOL_WINRM:
+        viewer = build_winrm_session(conn, password, &session);
         break;
     default:
         wipe_and_free(password);
@@ -376,6 +427,20 @@ static int persist_new_profile(const rt_connection_t *conn,
         p->vnc->clipboard_enabled = conn->vnc->clipboard_enabled;
         p->vnc->scale_mode_fit    = conn->vnc->scale_mode_fit;
     }
+    if (conn->winrm != NULL) {
+        p->winrm = rt_winrm_options_new();
+        p->winrm->transport              = conn->winrm->transport;
+        p->winrm->auth_method            = conn->winrm->auth_method;
+        p->winrm->ignore_cert_validation = conn->winrm->ignore_cert_validation;
+        p->winrm->shell_mode             = conn->winrm->shell_mode;
+        if (conn->winrm->domain != NULL) {
+            /* The shared `domain` slot on the profile is reused for
+             * WinRM (same column on disk). RDP uses it too, but the
+             * two protocols never coexist on a single row. */
+            p->domain = g_strdup(conn->winrm->domain);
+            rt_winrm_options_set_domain(p->winrm, conn->winrm->domain);
+        }
+    }
     /* Allocate a credential id only when there's actually a password
      * to store. Empty passwords stay un-keyringed. */
     if (password != NULL && password[0] != '\0') {
@@ -453,6 +518,23 @@ static int persist_edit_profile(int64_t                profile_id,
     } else {
         rt_vnc_options_free(p->vnc);
         p->vnc = NULL;
+    }
+
+    if (conn->winrm != NULL) {
+        if (p->winrm == NULL) p->winrm = rt_winrm_options_new();
+        p->winrm->transport              = conn->winrm->transport;
+        p->winrm->auth_method            = conn->winrm->auth_method;
+        p->winrm->ignore_cert_validation = conn->winrm->ignore_cert_validation;
+        p->winrm->shell_mode             = conn->winrm->shell_mode;
+        g_free(p->domain);
+        p->domain = (conn->winrm->domain && conn->winrm->domain[0])
+                    ? g_strdup(conn->winrm->domain) : NULL;
+        rt_winrm_options_set_domain(p->winrm, p->domain);
+    } else if (p->protocol != RT_PROTOCOL_RDP) {
+        /* Only clear the WinRM-side state on protocol switch; keep
+         * RDP's own use of p->domain intact when the row is RDP. */
+        rt_winrm_options_free(p->winrm);
+        p->winrm = NULL;
     }
 
     /* Replace credential iff user typed a new password. */
@@ -592,6 +674,11 @@ static void apply_chrome_to_all_tabs(rt_tab_manager_t *tm, gboolean visible)
         rt_vnc_view_t *vv = g_object_get_data(G_OBJECT(page), "rt-vnc-view-wrapper");
         if (vv != NULL) {
             rt_vnc_view_set_chrome_visible(vv, visible);
+            continue;
+        }
+        rt_winrm_view_t *wv = g_object_get_data(G_OBJECT(page), "rt-winrm-view-wrapper");
+        if (wv != NULL) {
+            rt_winrm_view_set_chrome_visible(wv, visible);
             continue;
         }
         rt_terminal_t *t = g_object_get_data(G_OBJECT(page), "rt-terminal-wrapper");

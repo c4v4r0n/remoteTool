@@ -49,6 +49,14 @@
 #define RT_KEY_VNC_CLIPBOARD  "rt-vnc-clipboard"
 #define RT_KEY_VNC_SCALE      "rt-vnc-scale"
 
+/* WinRM block + its fields. */
+#define RT_KEY_WINRM_BOX        "rt-winrm-box"
+#define RT_KEY_WINRM_DOMAIN     "rt-winrm-domain"
+#define RT_KEY_WINRM_TRANSPORT  "rt-winrm-transport"
+#define RT_KEY_WINRM_AUTH       "rt-winrm-auth"
+#define RT_KEY_WINRM_INSECURE   "rt-winrm-insecure"
+#define RT_KEY_WINRM_SHELLMODE  "rt-winrm-shellmode"
+
 /* Save-profile block. */
 #define RT_KEY_SAVE_TOGGLE    "rt-save-toggle"
 #define RT_KEY_SAVE_NAME      "rt-save-name"
@@ -77,10 +85,11 @@ static GtkWidget *make_label(const char *text)
 static guint default_port_for(rt_protocol_t p)
 {
     switch (p) {
-    case RT_PROTOCOL_SSH: return 22;
-    case RT_PROTOCOL_RDP: return 3389;
-    case RT_PROTOCOL_VNC: return 5900;
-    default:              return 0;
+    case RT_PROTOCOL_SSH:   return 22;
+    case RT_PROTOCOL_RDP:   return 3389;
+    case RT_PROTOCOL_VNC:   return 5900;
+    case RT_PROTOCOL_WINRM: return 5985;
+    default:                return 0;
     }
 }
 
@@ -98,9 +107,10 @@ static int form_is_edit_mode(GtkWidget *form)
 static void on_proto_changed(GtkComboBox *combo, gpointer user_data)
 {
     GtkWidget *form = GTK_WIDGET(user_data);
-    GtkSpinButton *port = g_object_get_data(G_OBJECT(form), RT_KEY_PORT);
-    GtkWidget    *rdp  = g_object_get_data(G_OBJECT(form), RT_KEY_RDP_BOX);
-    GtkWidget    *vnc  = g_object_get_data(G_OBJECT(form), RT_KEY_VNC_BOX);
+    GtkSpinButton *port  = g_object_get_data(G_OBJECT(form), RT_KEY_PORT);
+    GtkWidget    *rdp    = g_object_get_data(G_OBJECT(form), RT_KEY_RDP_BOX);
+    GtkWidget    *vnc    = g_object_get_data(G_OBJECT(form), RT_KEY_VNC_BOX);
+    GtkWidget    *winrm  = g_object_get_data(G_OBJECT(form), RT_KEY_WINRM_BOX);
 
     rt_protocol_t p = rt_protocol_from_string(gtk_combo_box_get_active_id(combo));
     if (!form_is_edit_mode(form)) {
@@ -109,8 +119,31 @@ static void on_proto_changed(GtkComboBox *combo, gpointer user_data)
             gtk_spin_button_set_value(port, (gdouble)def);
         }
     }
-    if (rdp != NULL) gtk_widget_set_visible(rdp, p == RT_PROTOCOL_RDP);
-    if (vnc != NULL) gtk_widget_set_visible(vnc, p == RT_PROTOCOL_VNC);
+    if (rdp   != NULL) gtk_widget_set_visible(rdp,   p == RT_PROTOCOL_RDP);
+    if (vnc   != NULL) gtk_widget_set_visible(vnc,   p == RT_PROTOCOL_VNC);
+    if (winrm != NULL) gtk_widget_set_visible(winrm, p == RT_PROTOCOL_WINRM);
+}
+
+/* WinRM transport changed: snap the port to the protocol-standard
+ * default for the chosen transport (5985 / 5986). Done only when the
+ * port still matches the *other* default, so we don't clobber a port
+ * the user explicitly typed. Skipped in edit mode for the same
+ * reason. */
+static void on_winrm_transport_changed(GtkComboBox *combo, gpointer user_data)
+{
+    GtkWidget *form = GTK_WIDGET(user_data);
+    if (form_is_edit_mode(form)) return;
+    GtkSpinButton *port = g_object_get_data(G_OBJECT(form), RT_KEY_PORT);
+    if (port == NULL) return;
+
+    rt_winrm_transport_t t =
+        rt_winrm_transport_from_string(gtk_combo_box_get_active_id(combo));
+    int cur = gtk_spin_button_get_value_as_int(port);
+    if (t == RT_WINRM_TRANSPORT_HTTPS && cur == 5985) {
+        gtk_spin_button_set_value(port, 5986.0);
+    } else if (t == RT_WINRM_TRANSPORT_HTTP && cur == 5986) {
+        gtk_spin_button_set_value(port, 5985.0);
+    }
 }
 
 /* Save-toggle changed: enable/disable the Name entry alongside it. */
@@ -206,6 +239,35 @@ static rt_connection_t *read_form(GtkWidget *form)
         const char *sm_id    = gtk_combo_box_get_active_id(sm);
         o->scale_mode_fit    = (sm_id != NULL && strcmp(sm_id, "orig") == 0) ? 0 : 1;
         conn->vnc = o;
+    }
+
+    if (conn->protocol == RT_PROTOCOL_WINRM) {
+        rt_winrm_options_t *o = rt_winrm_options_new();
+        if (o == NULL) {
+            rt_connection_free(conn);
+            return NULL;
+        }
+        GtkEntry        *dom  = g_object_get_data(G_OBJECT(form), RT_KEY_WINRM_DOMAIN);
+        GtkComboBox     *tr   = g_object_get_data(G_OBJECT(form), RT_KEY_WINRM_TRANSPORT);
+        GtkComboBox     *au   = g_object_get_data(G_OBJECT(form), RT_KEY_WINRM_AUTH);
+        GtkToggleButton *ins  = g_object_get_data(G_OBJECT(form), RT_KEY_WINRM_INSECURE);
+        GtkToggleButton *shm  = g_object_get_data(G_OBJECT(form), RT_KEY_WINRM_SHELLMODE);
+
+        const char *dom_text = gtk_entry_get_text(dom);
+        if (dom_text != NULL && dom_text[0] != '\0') {
+            if (rt_winrm_options_set_domain(o, dom_text) != 0) {
+                rt_winrm_options_free(o);
+                rt_connection_free(conn);
+                return NULL;
+            }
+        }
+        const char *tr_id = gtk_combo_box_get_active_id(tr);
+        const char *au_id = gtk_combo_box_get_active_id(au);
+        o->transport              = rt_winrm_transport_from_string(tr_id);
+        o->auth_method            = rt_winrm_auth_from_string(au_id);
+        o->ignore_cert_validation = gtk_toggle_button_get_active(ins) ? 1 : 0;
+        o->shell_mode             = gtk_toggle_button_get_active(shm) ? 1 : 0;
+        conn->winrm = o;
     }
 
     return conn;
@@ -379,6 +441,68 @@ static GtkWidget *build_vnc_block(GtkWidget *form)
 }
 
 /* ------------------------------------------------------------------ */
+/* WinRM options block                                                */
+/* ------------------------------------------------------------------ */
+
+static GtkWidget *build_winrm_block(GtkWidget *form)
+{
+    GtkWidget *frame = gtk_frame_new("WinRM Options");
+    GtkWidget *grid  = gtk_grid_new();
+    gtk_grid_set_row_spacing(GTK_GRID(grid), 8);
+    gtk_grid_set_column_spacing(GTK_GRID(grid), 12);
+    gtk_widget_set_margin_top   (grid, 10);
+    gtk_widget_set_margin_bottom(grid, 10);
+    gtk_widget_set_margin_start (grid, 12);
+    gtk_widget_set_margin_end   (grid, 12);
+    gtk_container_add(GTK_CONTAINER(frame), grid);
+
+    GtkWidget *domain = gtk_entry_new();
+    gtk_entry_set_placeholder_text(GTK_ENTRY(domain),
+                                   "domain (optional, e.g. CONTOSO)");
+    gtk_entry_set_max_length(GTK_ENTRY(domain), 128);
+    gtk_widget_set_hexpand(domain, TRUE);
+    gtk_grid_attach(GTK_GRID(grid), make_label("Domain:"), 0, 0, 1, 1);
+    gtk_grid_attach(GTK_GRID(grid), domain,                 1, 0, 3, 1);
+
+    GtkWidget *transport = gtk_combo_box_text_new();
+    gtk_combo_box_text_append(GTK_COMBO_BOX_TEXT(transport),
+                              "http",  "HTTP (5985)");
+    gtk_combo_box_text_append(GTK_COMBO_BOX_TEXT(transport),
+                              "https", "HTTPS (5986)");
+    gtk_combo_box_set_active_id(GTK_COMBO_BOX(transport), "http");
+    gtk_grid_attach(GTK_GRID(grid), make_label("Transport:"), 0, 1, 1, 1);
+    gtk_grid_attach(GTK_GRID(grid), transport,                  1, 1, 1, 1);
+
+    GtkWidget *auth = gtk_combo_box_text_new();
+    gtk_combo_box_text_append(GTK_COMBO_BOX_TEXT(auth), "basic", "Basic");
+    gtk_combo_box_text_append(GTK_COMBO_BOX_TEXT(auth), "ntlm",
+                              "NTLM (requires libcurl NTLM support)");
+    gtk_combo_box_set_active_id(GTK_COMBO_BOX(auth), "basic");
+    gtk_grid_attach(GTK_GRID(grid), make_label("Auth:"), 2, 1, 1, 1);
+    gtk_grid_attach(GTK_GRID(grid), auth,                  3, 1, 1, 1);
+
+    GtkWidget *insecure = gtk_check_button_new_with_label(
+        "Ignore certificate validation (HTTPS, INSECURE - lab use only)");
+    gtk_grid_attach(GTK_GRID(grid), insecure, 0, 2, 4, 1);
+
+    GtkWidget *shellmode = gtk_check_button_new_with_label(
+        "Persistent shell (state preserved across commands)");
+    gtk_toggle_button_set_active(GTK_TOGGLE_BUTTON(shellmode), TRUE);
+    gtk_grid_attach(GTK_GRID(grid), shellmode, 0, 3, 4, 1);
+
+    g_object_set_data(G_OBJECT(form), RT_KEY_WINRM_DOMAIN,    domain);
+    g_object_set_data(G_OBJECT(form), RT_KEY_WINRM_TRANSPORT, transport);
+    g_object_set_data(G_OBJECT(form), RT_KEY_WINRM_AUTH,      auth);
+    g_object_set_data(G_OBJECT(form), RT_KEY_WINRM_INSECURE,  insecure);
+    g_object_set_data(G_OBJECT(form), RT_KEY_WINRM_SHELLMODE, shellmode);
+
+    g_signal_connect(transport, "changed",
+                     G_CALLBACK(on_winrm_transport_changed), form);
+
+    return frame;
+}
+
+/* ------------------------------------------------------------------ */
 /* Save-profile block                                                 */
 /* ------------------------------------------------------------------ */
 
@@ -447,9 +571,10 @@ static GtkWidget *form_build(rt_connection_form_submit_cb_t cb,
     gtk_grid_attach(GTK_GRID(grid), title, 0, 0, 2, 1);
 
     GtkWidget *proto = gtk_combo_box_text_new();
-    gtk_combo_box_text_append(GTK_COMBO_BOX_TEXT(proto), "ssh", "SSH");
-    gtk_combo_box_text_append(GTK_COMBO_BOX_TEXT(proto), "rdp", "RDP");
-    gtk_combo_box_text_append(GTK_COMBO_BOX_TEXT(proto), "vnc", "VNC");
+    gtk_combo_box_text_append(GTK_COMBO_BOX_TEXT(proto), "ssh",   "SSH");
+    gtk_combo_box_text_append(GTK_COMBO_BOX_TEXT(proto), "rdp",   "RDP");
+    gtk_combo_box_text_append(GTK_COMBO_BOX_TEXT(proto), "vnc",   "VNC");
+    gtk_combo_box_text_append(GTK_COMBO_BOX_TEXT(proto), "winrm", "WinRM");
     gtk_combo_box_set_active_id(GTK_COMBO_BOX(proto), "ssh");
     gtk_grid_attach(GTK_GRID(grid), make_label("Protocol:"), 0, 1, 1, 1);
     gtk_grid_attach(GTK_GRID(grid), proto,                    1, 1, 1, 1);
@@ -490,20 +615,23 @@ static GtkWidget *form_build(rt_connection_form_submit_cb_t cb,
     GtkWidget *vnc_block = build_vnc_block(grid);
     gtk_grid_attach(GTK_GRID(grid), vnc_block, 0, 7, 2, 1);
 
+    GtkWidget *winrm_block = build_winrm_block(grid);
+    gtk_grid_attach(GTK_GRID(grid), winrm_block, 0, 8, 2, 1);
+
     GtkWidget *save_block = build_save_block(grid, for_edit);
-    gtk_grid_attach(GTK_GRID(grid), save_block, 0, 8, 2, 1);
+    gtk_grid_attach(GTK_GRID(grid), save_block, 0, 9, 2, 1);
 
     GtkWidget *submit_btn = gtk_button_new_with_label(
         for_edit ? "Save changes" : "Connect");
     gtk_widget_set_halign(submit_btn, GTK_ALIGN_END);
     gtk_style_context_add_class(gtk_widget_get_style_context(submit_btn),
                                 "suggested-action");
-    gtk_grid_attach(GTK_GRID(grid), submit_btn, 1, 9, 1, 1);
+    gtk_grid_attach(GTK_GRID(grid), submit_btn, 1, 10, 1, 1);
 
     GtkWidget *status = gtk_label_new("");
     gtk_label_set_xalign(GTK_LABEL(status), 0.0f);
     gtk_label_set_line_wrap(GTK_LABEL(status), TRUE);
-    gtk_grid_attach(GTK_GRID(grid), status, 0, 10, 2, 1);
+    gtk_grid_attach(GTK_GRID(grid), status, 0, 11, 2, 1);
 
     /* Stash widget pointers and the submit ctx. ctx is heap-allocated
      * so it survives the constructor return; freed when the grid is
@@ -518,8 +646,9 @@ static GtkWidget *form_build(rt_connection_form_submit_cb_t cb,
     g_object_set_data     (G_OBJECT(grid), RT_KEY_USER,    username);
     g_object_set_data     (G_OBJECT(grid), RT_KEY_PASS,    password);
     g_object_set_data     (G_OBJECT(grid), RT_KEY_STATUS,  status);
-    g_object_set_data     (G_OBJECT(grid), RT_KEY_RDP_BOX, rdp_block);
-    g_object_set_data     (G_OBJECT(grid), RT_KEY_VNC_BOX, vnc_block);
+    g_object_set_data     (G_OBJECT(grid), RT_KEY_RDP_BOX,   rdp_block);
+    g_object_set_data     (G_OBJECT(grid), RT_KEY_VNC_BOX,   vnc_block);
+    g_object_set_data     (G_OBJECT(grid), RT_KEY_WINRM_BOX, winrm_block);
     g_object_set_data_full(G_OBJECT(grid), RT_KEY_CB,
                            ctx, (GDestroyNotify)g_free);
 
@@ -530,7 +659,7 @@ static GtkWidget *form_build(rt_connection_form_submit_cb_t cb,
     g_signal_connect(password,   "activate",
                      G_CALLBACK(on_submit_clicked), grid);
 
-    /* Hide both protocol-specific blocks initially. See earlier-phase
+    /* Hide all protocol-specific blocks initially. See earlier-phase
      * comment about no_show_all + show_all ordering. */
     gtk_widget_show_all(rdp_block);
     gtk_widget_set_no_show_all(rdp_block, TRUE);
@@ -538,6 +667,9 @@ static GtkWidget *form_build(rt_connection_form_submit_cb_t cb,
     gtk_widget_show_all(vnc_block);
     gtk_widget_set_no_show_all(vnc_block, TRUE);
     gtk_widget_hide(vnc_block);
+    gtk_widget_show_all(winrm_block);
+    gtk_widget_set_no_show_all(winrm_block, TRUE);
+    gtk_widget_hide(winrm_block);
 
     /* If we're editing, populate every field from the profile and
      * stash the id so submit knows it's an UPDATE. */
@@ -589,6 +721,24 @@ static GtkWidget *form_build(rt_connection_form_submit_cb_t cb,
                 edit_profile->vnc->clipboard_enabled ? TRUE : FALSE);
             gtk_combo_box_set_active_id(sm,
                 edit_profile->vnc->scale_mode_fit ? "fit" : "orig");
+        }
+        if (edit_profile->winrm != NULL) {
+            GtkEntry        *dom = g_object_get_data(G_OBJECT(grid), RT_KEY_WINRM_DOMAIN);
+            GtkComboBox     *tr  = g_object_get_data(G_OBJECT(grid), RT_KEY_WINRM_TRANSPORT);
+            GtkComboBox     *au  = g_object_get_data(G_OBJECT(grid), RT_KEY_WINRM_AUTH);
+            GtkToggleButton *ins = g_object_get_data(G_OBJECT(grid), RT_KEY_WINRM_INSECURE);
+            GtkToggleButton *shm = g_object_get_data(G_OBJECT(grid), RT_KEY_WINRM_SHELLMODE);
+            if (edit_profile->winrm->domain != NULL) {
+                gtk_entry_set_text(dom, edit_profile->winrm->domain);
+            }
+            gtk_combo_box_set_active_id(tr,
+                rt_winrm_transport_to_string(edit_profile->winrm->transport));
+            gtk_combo_box_set_active_id(au,
+                rt_winrm_auth_to_string(edit_profile->winrm->auth_method));
+            gtk_toggle_button_set_active(ins,
+                edit_profile->winrm->ignore_cert_validation ? TRUE : FALSE);
+            gtk_toggle_button_set_active(shm,
+                edit_profile->winrm->shell_mode ? TRUE : FALSE);
         }
     }
 

@@ -242,8 +242,21 @@ rt_session_t *rt_session_new(rt_connection_t                 *conn,
     }
 
     if (s->ctx == NULL) {
-        /* open() may have queued an error state via callbacks. Drain
-         * synchronously so the UI sees it before we report failure. */
+        /* open() may have queued an error state via callbacks AND
+         * registered an idle source via g_idle_add. Cancel that
+         * source first - returning G_SOURCE_REMOVE from drain_to_ui
+         * only takes effect when GLib invoked it, not when we call
+         * it directly - then drain synchronously so the UI still
+         * sees the error before we report failure. Without this
+         * cancel, the idle would fire later against a freed `s`. */
+        guint pending;
+        pthread_mutex_lock(&s->idle_mtx);
+        pending = s->idle_id;
+        s->idle_id = 0;
+        pthread_mutex_unlock(&s->idle_mtx);
+        if (pending != 0) {
+            g_source_remove(pending);
+        }
         drain_to_ui(s);
         g_async_queue_unref(s->queue);
         pthread_mutex_destroy(&s->idle_mtx);

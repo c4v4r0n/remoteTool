@@ -23,7 +23,7 @@
 #include <sys/stat.h>
 #include <sys/types.h>
 
-#define RT_DB_SCHEMA_VERSION 2
+#define RT_DB_SCHEMA_VERSION 3
 
 /* Per-version migration SQL. MIGRATIONS[i] is the SQL that takes the
  * DB from version i to version i+1. NEVER edit existing entries -
@@ -53,6 +53,12 @@ static const char *const MIGRATIONS[] = {
     "ALTER TABLE connections ADD COLUMN vnc_view_only  INTEGER;"
     "ALTER TABLE connections ADD COLUMN vnc_clipboard  INTEGER;"
     "ALTER TABLE connections ADD COLUMN vnc_scale_mode TEXT;",
+
+    /* v2 -> v3: WinRM profile fields. Additive ALTERs, NULL on old rows. */
+    "ALTER TABLE connections ADD COLUMN winrm_transport   TEXT;"
+    "ALTER TABLE connections ADD COLUMN winrm_auth        TEXT;"
+    "ALTER TABLE connections ADD COLUMN winrm_ignore_cert INTEGER;"
+    "ALTER TABLE connections ADD COLUMN winrm_shell_mode  INTEGER;",
 };
 
 static sqlite3 *g_db = NULL;

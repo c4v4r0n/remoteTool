@@ -37,6 +37,7 @@ void rt_connection_free(rt_connection_t *conn)
     free(conn->username);
     rt_rdp_options_free(conn->rdp);
     rt_vnc_options_free(conn->vnc);
+    rt_winrm_options_free(conn->winrm);
     free(conn);
 }
 
@@ -116,22 +117,86 @@ void rt_vnc_options_free(rt_vnc_options_t *opts)
     free(opts);
 }
 
+rt_winrm_options_t *rt_winrm_options_new(void)
+{
+    rt_winrm_options_t *o = calloc(1, sizeof(*o));
+    if (o == NULL) {
+        return NULL;
+    }
+    o->transport              = RT_WINRM_TRANSPORT_HTTP;
+    o->auth_method            = RT_WINRM_AUTH_BASIC;
+    o->ignore_cert_validation = 0;
+    o->shell_mode             = 1;
+    return o;
+}
+
+void rt_winrm_options_free(rt_winrm_options_t *opts)
+{
+    if (opts == NULL) {
+        return;
+    }
+    free(opts->domain);
+    free(opts);
+}
+
+int rt_winrm_options_set_domain(rt_winrm_options_t *opts, const char *domain)
+{
+    if (opts == NULL) {
+        return -1;
+    }
+    char *copy = dup_str(domain);
+    if (domain != NULL && copy == NULL) {
+        return -1;
+    }
+    free(opts->domain);
+    opts->domain = copy;
+    return 0;
+}
+
+const char *rt_winrm_transport_to_string(rt_winrm_transport_t t)
+{
+    return (t == RT_WINRM_TRANSPORT_HTTPS) ? "https" : "http";
+}
+
+rt_winrm_transport_t rt_winrm_transport_from_string(const char *s)
+{
+    if (s != NULL && strcmp(s, "https") == 0) {
+        return RT_WINRM_TRANSPORT_HTTPS;
+    }
+    return RT_WINRM_TRANSPORT_HTTP;
+}
+
+const char *rt_winrm_auth_to_string(rt_winrm_auth_t a)
+{
+    return (a == RT_WINRM_AUTH_NTLM) ? "ntlm" : "basic";
+}
+
+rt_winrm_auth_t rt_winrm_auth_from_string(const char *s)
+{
+    if (s != NULL && strcmp(s, "ntlm") == 0) {
+        return RT_WINRM_AUTH_NTLM;
+    }
+    return RT_WINRM_AUTH_BASIC;
+}
+
 const char *rt_protocol_to_string(rt_protocol_t p)
 {
     switch (p) {
-    case RT_PROTOCOL_SSH:  return "ssh";
-    case RT_PROTOCOL_RDP:  return "rdp";
-    case RT_PROTOCOL_VNC:  return "vnc";
+    case RT_PROTOCOL_SSH:   return "ssh";
+    case RT_PROTOCOL_RDP:   return "rdp";
+    case RT_PROTOCOL_VNC:   return "vnc";
+    case RT_PROTOCOL_WINRM: return "winrm";
     case RT_PROTOCOL_NONE: /* fallthrough */
-    default:               return "none";
+    default:                return "none";
     }
 }
 
 rt_protocol_t rt_protocol_from_string(const char *s)
 {
-    if (s == NULL)            return RT_PROTOCOL_NONE;
-    if (strcmp(s, "ssh") == 0) return RT_PROTOCOL_SSH;
-    if (strcmp(s, "rdp") == 0) return RT_PROTOCOL_RDP;
-    if (strcmp(s, "vnc") == 0) return RT_PROTOCOL_VNC;
+    if (s == NULL)              return RT_PROTOCOL_NONE;
+    if (strcmp(s, "ssh") == 0)   return RT_PROTOCOL_SSH;
+    if (strcmp(s, "rdp") == 0)   return RT_PROTOCOL_RDP;
+    if (strcmp(s, "vnc") == 0)   return RT_PROTOCOL_VNC;
+    if (strcmp(s, "winrm") == 0) return RT_PROTOCOL_WINRM;
     return RT_PROTOCOL_NONE;
 }

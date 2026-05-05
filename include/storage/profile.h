@@ -23,18 +23,19 @@
  */
 
 typedef struct {
-    int64_t           id;             /* 0 if not yet saved */
-    char             *name;           /* user-facing label, required */
-    rt_protocol_t     protocol;
-    char             *host;
-    unsigned short    port;
-    char             *username;       /* may be NULL */
-    char             *domain;         /* may be NULL (RDP only) */
-    rt_rdp_options_t *rdp;            /* NULL unless protocol == RDP */
-    rt_vnc_options_t *vnc;            /* NULL unless protocol == VNC */
-    char             *credential_id;  /* libsecret key, NULL if no saved password */
-    int64_t           created_at;     /* unix epoch */
-    int64_t           updated_at;
+    int64_t              id;             /* 0 if not yet saved */
+    char                *name;           /* user-facing label, required */
+    rt_protocol_t        protocol;
+    char                *host;
+    unsigned short       port;
+    char                *username;       /* may be NULL */
+    char                *domain;         /* may be NULL (RDP/WinRM) */
+    rt_rdp_options_t    *rdp;             /* NULL unless protocol == RDP */
+    rt_vnc_options_t    *vnc;             /* NULL unless protocol == VNC */
+    rt_winrm_options_t  *winrm;           /* NULL unless protocol == WINRM */
+    char                *credential_id;  /* libsecret key, NULL if no saved password */
+    int64_t              created_at;     /* unix epoch */
+    int64_t              updated_at;
 } rt_profile_t;
 
 rt_profile_t *rt_profile_new(void);

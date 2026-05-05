@@ -87,6 +87,7 @@ void rt_profile_free(rt_profile_t *p)
     free(p->credential_id);
     rt_rdp_options_free(p->rdp);
     rt_vnc_options_free(p->vnc);
+    rt_winrm_options_free(p->winrm);
     free(p);
 }
 
@@ -146,6 +147,27 @@ static rt_profile_t *profile_from_row(sqlite3_stmt *st)
         p->vnc->scale_mode_fit    = (sm != NULL && strcmp((const char *)sm, "orig") == 0)
                                     ? 0 : 1;
     }
+
+    /* winrm_* columns: present together iff this is a WinRM profile.
+     * Added in schema v3. */
+    if (sqlite3_column_type(st, 18) != SQLITE_NULL) {
+        p->winrm = rt_winrm_options_new();
+        if (p->winrm == NULL) {
+            rt_profile_free(p);
+            return NULL;
+        }
+        const unsigned char *tr = sqlite3_column_text(st, 18);
+        const unsigned char *au = sqlite3_column_text(st, 19);
+        p->winrm->transport              =
+            rt_winrm_transport_from_string(tr ? (const char *)tr : NULL);
+        p->winrm->auth_method            =
+            rt_winrm_auth_from_string(au ? (const char *)au : NULL);
+        p->winrm->ignore_cert_validation = sqlite3_column_int(st, 20);
+        p->winrm->shell_mode             = sqlite3_column_int(st, 21);
+        if (p->domain != NULL) {
+            rt_winrm_options_set_domain(p->winrm, p->domain);
+        }
+    }
     return p;
 }
 
@@ -155,7 +177,8 @@ static rt_profile_t *profile_from_row(sqlite3_stmt *st)
     "id, name, protocol, host, port, username, domain, " \
     "rdp_width, rdp_height, rdp_color_depth, rdp_insecure, rdp_clipboard, " \
     "credential_id, created_at, updated_at, " \
-    "vnc_view_only, vnc_clipboard, vnc_scale_mode"
+    "vnc_view_only, vnc_clipboard, vnc_scale_mode, " \
+    "winrm_transport, winrm_auth, winrm_ignore_cert, winrm_shell_mode"
 
 /* ------------------------------------------------------------------ */
 /* save (INSERT or UPDATE)                                            */
@@ -173,10 +196,15 @@ int rt_profile_save(rt_profile_t *p)
     }
 
     int64_t now      = (int64_t)time(NULL);
-    int     has_rdp  = (p->rdp != NULL) ? 1 : 0;
-    int     has_vnc  = (p->vnc != NULL) ? 1 : 0;
+    int     has_rdp   = (p->rdp   != NULL) ? 1 : 0;
+    int     has_vnc   = (p->vnc   != NULL) ? 1 : 0;
+    int     has_winrm = (p->winrm != NULL) ? 1 : 0;
     const char *vnc_sm = has_vnc ? (p->vnc->scale_mode_fit ? "fit" : "orig")
                                  : NULL;
+    const char *winrm_tr = has_winrm
+        ? rt_winrm_transport_to_string(p->winrm->transport) : NULL;
+    const char *winrm_au = has_winrm
+        ? rt_winrm_auth_to_string(p->winrm->auth_method) : NULL;
 
     sqlite3_stmt *st = NULL;
     int rc;
@@ -188,8 +216,9 @@ int rt_profile_save(rt_profile_t *p)
             "(name, protocol, host, port, username, domain, "
             " rdp_width, rdp_height, rdp_color_depth, rdp_insecure, rdp_clipboard, "
             " credential_id, created_at, updated_at, "
-            " vnc_view_only, vnc_clipboard, vnc_scale_mode) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);";
+            " vnc_view_only, vnc_clipboard, vnc_scale_mode, "
+            " winrm_transport, winrm_auth, winrm_ignore_cert, winrm_shell_mode) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);";
         if (sqlite3_prepare_v2(db, sql, -1, &st, NULL) != SQLITE_OK) {
             return -1;
         }
@@ -210,6 +239,10 @@ int rt_profile_save(rt_profile_t *p)
         bind_int_or_null (st, 15, has_vnc ? p->vnc->view_only         : 0, has_vnc);
         bind_int_or_null (st, 16, has_vnc ? p->vnc->clipboard_enabled : 0, has_vnc);
         bind_text_or_null(st, 17, vnc_sm);
+        bind_text_or_null(st, 18, winrm_tr);
+        bind_text_or_null(st, 19, winrm_au);
+        bind_int_or_null (st, 20, has_winrm ? p->winrm->ignore_cert_validation : 0, has_winrm);
+        bind_int_or_null (st, 21, has_winrm ? p->winrm->shell_mode             : 0, has_winrm);
 
         rc = sqlite3_step(st);
         sqlite3_finalize(st);
@@ -229,7 +262,8 @@ int rt_profile_save(rt_profile_t *p)
         " rdp_width=?, rdp_height=?, rdp_color_depth=?, "
         " rdp_insecure=?, rdp_clipboard=?, credential_id=?, "
         " updated_at=?, "
-        " vnc_view_only=?, vnc_clipboard=?, vnc_scale_mode=? "
+        " vnc_view_only=?, vnc_clipboard=?, vnc_scale_mode=?, "
+        " winrm_transport=?, winrm_auth=?, winrm_ignore_cert=?, winrm_shell_mode=? "
         "WHERE id=?;";
     if (sqlite3_prepare_v2(db, sql, -1, &st, NULL) != SQLITE_OK) {
         return -1;
@@ -250,7 +284,11 @@ int rt_profile_save(rt_profile_t *p)
     bind_int_or_null (st, 14, has_vnc ? p->vnc->view_only         : 0, has_vnc);
     bind_int_or_null (st, 15, has_vnc ? p->vnc->clipboard_enabled : 0, has_vnc);
     bind_text_or_null(st, 16, vnc_sm);
-    sqlite3_bind_int64(st, 17, p->id);
+    bind_text_or_null(st, 17, winrm_tr);
+    bind_text_or_null(st, 18, winrm_au);
+    bind_int_or_null (st, 19, has_winrm ? p->winrm->ignore_cert_validation : 0, has_winrm);
+    bind_int_or_null (st, 20, has_winrm ? p->winrm->shell_mode             : 0, has_winrm);
+    sqlite3_bind_int64(st, 21, p->id);
 
     rc = sqlite3_step(st);
     sqlite3_finalize(st);
@@ -436,6 +474,18 @@ rt_connection_t *rt_profile_to_connection(const rt_profile_t *p)
         c->vnc->view_only         = p->vnc->view_only;
         c->vnc->clipboard_enabled = p->vnc->clipboard_enabled;
         c->vnc->scale_mode_fit    = p->vnc->scale_mode_fit;
+    }
+    if (p->winrm != NULL) {
+        c->winrm = rt_winrm_options_new();
+        if (c->winrm == NULL) goto fail;
+        c->winrm->transport              = p->winrm->transport;
+        c->winrm->auth_method            = p->winrm->auth_method;
+        c->winrm->ignore_cert_validation = p->winrm->ignore_cert_validation;
+        c->winrm->shell_mode             = p->winrm->shell_mode;
+        if (p->winrm->domain != NULL &&
+            rt_winrm_options_set_domain(c->winrm, p->winrm->domain) != 0) {
+            goto fail;
+        }
     }
     return c;
 

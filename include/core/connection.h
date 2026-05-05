@@ -21,7 +21,8 @@ typedef enum {
     RT_PROTOCOL_NONE = 0,
     RT_PROTOCOL_SSH,
     RT_PROTOCOL_RDP,
-    RT_PROTOCOL_VNC
+    RT_PROTOCOL_VNC,
+    RT_PROTOCOL_WINRM
 } rt_protocol_t;
 
 /* RDP-specific options. Sensible defaults are filled in by
@@ -43,13 +44,39 @@ typedef struct {
     int  scale_mode_fit;       /* 0=Original, 1=Scale to fit (default UI) */
 } rt_vnc_options_t;
 
+/* WinRM transport. HTTP is plaintext (port 5985); HTTPS goes through
+ * TLS via libcurl/OpenSSL (port 5986). */
+typedef enum {
+    RT_WINRM_TRANSPORT_HTTP  = 0,
+    RT_WINRM_TRANSPORT_HTTPS = 1
+} rt_winrm_transport_t;
+
+/* WinRM authentication scheme. NTLM availability depends on libcurl
+ * being built with NTLM support; we still surface it so the UI can
+ * select it and the protocol can fail with a clear error if absent. */
+typedef enum {
+    RT_WINRM_AUTH_BASIC = 0,
+    RT_WINRM_AUTH_NTLM  = 1
+} rt_winrm_auth_t;
+
+/* WinRM-specific options. Defaults from rt_winrm_options_new():
+ * transport=HTTP, auth=Basic, ignore_cert=0, shell_mode=1. */
 typedef struct {
-    rt_protocol_t      protocol;
-    char              *host;      /* heap, owned */
-    unsigned short     port;
-    char              *username;  /* heap, owned, may be NULL */
-    rt_rdp_options_t  *rdp;       /* heap, owned, NULL unless RDP */
-    rt_vnc_options_t  *vnc;       /* heap, owned, NULL unless VNC */
+    char                  *domain;             /* heap, may be NULL */
+    rt_winrm_transport_t   transport;
+    rt_winrm_auth_t        auth_method;
+    int                    ignore_cert_validation; /* 0/1 - HTTPS only, lab */
+    int                    shell_mode;             /* 0=one-shot, 1=persistent */
+} rt_winrm_options_t;
+
+typedef struct {
+    rt_protocol_t        protocol;
+    char                *host;      /* heap, owned */
+    unsigned short       port;
+    char                *username;  /* heap, owned, may be NULL */
+    rt_rdp_options_t    *rdp;       /* heap, owned, NULL unless RDP */
+    rt_vnc_options_t    *vnc;       /* heap, owned, NULL unless VNC */
+    rt_winrm_options_t  *winrm;     /* heap, owned, NULL unless WINRM */
 } rt_connection_t;
 
 rt_connection_t *rt_connection_new(void);
@@ -71,6 +98,19 @@ int               rt_rdp_options_set_domain(rt_rdp_options_t *opts,
  * scale-mode = fit. Returns NULL on allocation failure. */
 rt_vnc_options_t *rt_vnc_options_new(void);
 void              rt_vnc_options_free(rt_vnc_options_t *opts);
+
+/* WinRM options helpers. Defaults: transport=HTTP, auth=Basic,
+ * ignore_cert OFF, shell_mode=1 (persistent shell across commands).
+ * Returns NULL on allocation failure. */
+rt_winrm_options_t *rt_winrm_options_new(void);
+void                rt_winrm_options_free(rt_winrm_options_t *opts);
+int                 rt_winrm_options_set_domain(rt_winrm_options_t *opts,
+                                                const char *domain);
+
+const char *rt_winrm_transport_to_string(rt_winrm_transport_t t);
+rt_winrm_transport_t rt_winrm_transport_from_string(const char *s);
+const char *rt_winrm_auth_to_string(rt_winrm_auth_t a);
+rt_winrm_auth_t rt_winrm_auth_from_string(const char *s);
 
 const char   *rt_protocol_to_string(rt_protocol_t p);
 rt_protocol_t rt_protocol_from_string(const char *s);
