@@ -259,6 +259,134 @@ static gboolean on_scroll(GtkWidget *w, GdkEventScroll *e, gpointer user)
     return TRUE;
 }
 
+/* ------------------------------------------------------------------ */
+/* Send-special-keys (Ctrl+Alt+Del menu)                              */
+/* ------------------------------------------------------------------ */
+
+#define RT_RDP_CHORD_MAX 4
+
+typedef struct {
+    const char *label;
+    guint       keysyms[RT_RDP_CHORD_MAX]; /* GDK keysyms, NUL-terminated */
+} rt_rdp_chord_t;
+
+/* Standard remote-desktop "send-special-keys" set, modeled on the
+ * VMware Workstation menu. Each entry is press-all-then-release-all,
+ * release order reversed so modifier keys come up last. */
+static const rt_rdp_chord_t RT_RDP_SPECIAL_CHORDS[] = {
+    { "Ctrl+Alt+Del",
+      { GDK_KEY_Control_L, GDK_KEY_Alt_L, GDK_KEY_Delete } },
+    { "Ctrl+Alt+End  (alias for Ctrl+Alt+Del)",
+      { GDK_KEY_Control_L, GDK_KEY_Alt_L, GDK_KEY_Delete } },
+    { "Ctrl+Shift+Esc  (Task Manager)",
+      { GDK_KEY_Control_L, GDK_KEY_Shift_L, GDK_KEY_Escape } },
+    { "Ctrl+Esc  (Start menu)",
+      { GDK_KEY_Control_L, GDK_KEY_Escape } },
+    { "Alt+Tab",
+      { GDK_KEY_Alt_L, GDK_KEY_Tab } },
+    { "Alt+F4",
+      { GDK_KEY_Alt_L, GDK_KEY_F4 } },
+    { "Win  (Start)",
+      { GDK_KEY_Super_L } },
+    { "Print Screen",
+      { GDK_KEY_Print } },
+};
+
+/* Resolve a GDK keysym to the X11 hardware keycode the local keymap
+ * uses for it, so the chord goes through the same dispatch path as a
+ * normal physical keypress. Returns 0 if the keysym isn't bound. */
+static guint keysym_to_keycode(guint keysym)
+{
+    GdkKeymap     *km   = gdk_keymap_get_for_display(gdk_display_get_default());
+    GdkKeymapKey  *keys = NULL;
+    gint           n    = 0;
+    guint          out  = 0;
+
+    if (gdk_keymap_get_entries_for_keyval(km, keysym, &keys, &n) && n > 0) {
+        out = keys[0].keycode;
+    }
+    g_free(keys);
+    return out;
+}
+
+static void send_chord(rt_rdp_view_t *v, const guint *keysyms)
+{
+    if (!v->input_enabled || v->session == NULL) {
+        return;
+    }
+
+    guint keycodes[RT_RDP_CHORD_MAX];
+    int   n = 0;
+    for (int i = 0; i < RT_RDP_CHORD_MAX && keysyms[i] != 0; i++) {
+        guint kc = keysym_to_keycode(keysyms[i]);
+        if (kc == 0) {
+            return;  /* unmapped key on this layout - bail rather than send a partial chord */
+        }
+        keycodes[n++] = kc;
+    }
+    if (n == 0) {
+        return;
+    }
+
+    /* Press in order, release in reverse so modifiers stay held while
+     * the action key fires and come up cleanly afterwards. */
+    for (int i = 0; i < n; i++) {
+        rt_input_event_t ev = {
+            .kind    = RT_INPUT_KEY,
+            .keycode = keycodes[i],
+            .pressed = 1,
+        };
+        rt_session_send_input(v->session, &ev);
+    }
+    for (int i = n - 1; i >= 0; i--) {
+        rt_input_event_t ev = {
+            .kind    = RT_INPUT_KEY,
+            .keycode = keycodes[i],
+            .pressed = 0,
+        };
+        rt_session_send_input(v->session, &ev);
+    }
+
+    /* Restore canvas focus so subsequent typing still goes there. */
+    gtk_widget_grab_focus(v->area);
+}
+
+static void on_special_key_clicked(GtkMenuItem *item, gpointer user_data)
+{
+    rt_rdp_view_t        *v     = user_data;
+    const rt_rdp_chord_t *chord = g_object_get_data(G_OBJECT(item),
+                                                    "rt-chord");
+    if (chord != NULL) {
+        send_chord(v, chord->keysyms);
+    }
+}
+
+/* Build the popup menu attached to the "Send Keys" toolbar button. */
+static GtkWidget *build_special_keys_menu(rt_rdp_view_t *v)
+{
+    GtkWidget *menu = gtk_menu_new();
+    for (size_t i = 0;
+         i < sizeof(RT_RDP_SPECIAL_CHORDS) / sizeof(RT_RDP_SPECIAL_CHORDS[0]);
+         i++) {
+        const rt_rdp_chord_t *chord = &RT_RDP_SPECIAL_CHORDS[i];
+        GtkWidget *item = gtk_menu_item_new_with_label(chord->label);
+        /* Drop the const through uintptr_t to satisfy -Wcast-qual.
+         * The handler treats the pointer as read-only - the table is
+         * static const. */
+        g_object_set_data(G_OBJECT(item), "rt-chord",
+                          (gpointer)(uintptr_t)chord);
+        g_signal_connect(item, "activate",
+                         G_CALLBACK(on_special_key_clicked), v);
+        gtk_menu_shell_append(GTK_MENU_SHELL(menu), item);
+    }
+    gtk_widget_show_all(menu);
+    return menu;
+}
+
+/* ------------------------------------------------------------------ */
+/* Key events from the canvas                                         */
+/* ------------------------------------------------------------------ */
+
 static gboolean on_key(GtkWidget *w, GdkEventKey *e, gpointer user)
 {
     (void)w;
@@ -442,8 +570,19 @@ rt_rdp_view_t *rt_rdp_view_new(rt_session_t *session)
     gtk_combo_box_text_append(GTK_COMBO_BOX_TEXT(v->combo), "orig", "Original size");
     gtk_combo_box_set_active_id(GTK_COMBO_BOX(v->combo), "fit");
 
-    gtk_box_pack_start(GTK_BOX(bar), v->status, TRUE,  TRUE,  0);
-    gtk_box_pack_end  (GTK_BOX(bar), v->combo,  FALSE, FALSE, 0);
+    /* "Send Keys" menu button - lets the user fire combinations the
+     * local OS / WM intercepts (Ctrl+Alt+Del, Win, Alt+F4, etc.). */
+    GtkWidget *send_btn = gtk_menu_button_new();
+    gtk_button_set_label(GTK_BUTTON(send_btn), "Send Keys");
+    gtk_widget_set_tooltip_text(send_btn,
+        "Send a special key combination to the remote desktop");
+    gtk_widget_set_focus_on_click(send_btn, FALSE);
+    gtk_menu_button_set_popup(GTK_MENU_BUTTON(send_btn),
+                              build_special_keys_menu(v));
+
+    gtk_box_pack_start(GTK_BOX(bar), v->status,   TRUE,  TRUE,  0);
+    gtk_box_pack_end  (GTK_BOX(bar), v->combo,    FALSE, FALSE, 0);
+    gtk_box_pack_end  (GTK_BOX(bar), send_btn,    FALSE, FALSE, 0);
     gtk_box_pack_start(GTK_BOX(v->box), bar, FALSE, FALSE, 0);
 
     /* Drawing surface inside a scrolled window. */
