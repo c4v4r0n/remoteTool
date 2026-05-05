@@ -1,0 +1,57 @@
+# --- Build output ----------------------------------------------------------
+# `make` puts the binary, .o files, and -MMD .d dep files under /build at
+# the repo root. setup.sh stages the patched FreeRDP source and its cmake
+# build tree under /.freerdp-build.
+/build/
+/.freerdp-build/
+
+# --- C build artifacts (catch-all, anywhere in tree) -----------------------
+*.o
+*.obj
+*.a
+*.so
+*.so.*
+*.dylib
+*.d
+*.gch
+*.lo
+*.la
+
+# Core dumps from crashes (gdb, valgrind).
+core
+core.*
+vgcore.*
+
+# Coverage data, in case anyone runs gcov.
+*.gcda
+*.gcno
+*.gcov
+/coverage/
+
+# clangd / language-server caches.
+compile_commands.json
+.cache/
+.clangd/
+
+# --- Editor / IDE ----------------------------------------------------------
+*.swp
+*.swo
+*~
+.*.swp
+.DS_Store
+
+.vscode/
+.idea/
+*.iml
+
+# --- Claude Code -----------------------------------------------------------
+# Per-project Claude Code state and instructions: keep these local to each
+# developer's machine instead of committing them.
+.claude/
+CLAUDE.md
+
+# --- Misc ------------------------------------------------------------------
+*.bak
+*.tmp
+*.orig
+*.rej

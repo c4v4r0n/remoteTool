@@ -1,0 +1,83 @@
+--- a/channels/CMakeLists.txt
++++ b/channels/CMakeLists.txt
+@@ -183,18 +183,38 @@
+     link_directories(${_lnk_dir})
+   endif()
+ 
+-	set(${_module_prefix}_STATIC ON PARENT_SCOPE)
++	set(${_module_prefix}_STATIC OFF PARENT_SCOPE)
+ 	set(${_module_prefix}_NAME ${_module_name} PARENT_SCOPE)
+ 	set(${_module_prefix}_CHANNEL ${_channel_name} PARENT_SCOPE)
+ 	set(${_module_prefix}_ENTRY ${_entry} PARENT_SCOPE)
+ 
+-	add_library(${_module_name} OBJECT ${${_module_prefix}_SRCS})
++	add_library(${_module_name} MODULE ${${_module_prefix}_SRCS})
++	set_target_properties(${_module_name} PROPERTIES PREFIX "lib" OUTPUT_NAME "${_channel_name}-client")
+ 	set_property(TARGET ${_module_name} PROPERTY FOLDER "Channels/${CHANNEL_NAME}/Client")
++	# Channels were designed to be linked statically into xfreerdp, so:
++	#   1. The entry point is hidden by global -fvisibility=hidden -
++	#      override per target.
++	#   2. Sources name the entry "<channel>_<entry>" (e.g.
++	#      disp_DVCPluginEntry), but the dlopen path in libfreerdp
++	#      looks up the unprefixed name. Add a linker --defsym alias
++	#      so each plugin .so exports both names pointing at the same
++	#      function. dlopen uses RTLD_LOCAL so plugins with the same
++	#      unprefixed name don't collide.
++	target_compile_options(${_module_name} PRIVATE -fvisibility=default)
++	# _entry can be a CMake list (e.g. "VirtualChannelEntryEx;DVCPluginEntry").
++	# Inside a macro, args are text-substituted, so we iterate directly
++	# instead of using "IN LISTS". Emit one --defsym per entry so each
++	# unprefixed name aliases the corresponding prefixed function.
++	foreach(_entry_name ${_entry})
++		target_link_options(${_module_name} PRIVATE
++			"LINKER:--defsym=${_entry_name}=${_channel_name}_${_entry_name}")
++	endforeach()
+ 
++	target_link_libraries(${_module_name} PRIVATE freerdp winpr)
+ 	if (${_module_prefix}_LIBS)
+-		target_link_libraries(${_module_name} PUBLIC ${${_module_prefix}_LIBS})
++		target_link_libraries(${_module_name} PRIVATE ${${_module_prefix}_LIBS})
+ 	endif()
+-	client_channel_install(${_module_name}  ${FREERDP_ADDIN_PATH})
++	install(TARGETS ${_module_name} DESTINATION ${FREERDP_ADDIN_PATH})
+ endmacro(add_channel_client_library)
+ 
+ macro(add_channel_client_subsystem_library _module_prefix _module_name _channel_name _type _dynamic _entry)
+@@ -203,17 +223,33 @@
+     link_directories(${_lnk_dir})
+   endif()
+ 
+-	set(${_module_prefix}_STATIC ON PARENT_SCOPE)
++	set(${_module_prefix}_STATIC OFF PARENT_SCOPE)
+ 	set(${_module_prefix}_NAME ${_module_name} PARENT_SCOPE)
+ 	set(${_module_prefix}_TYPE ${_type} PARENT_SCOPE)
+ 
+-	add_library(${_module_name} OBJECT ${${_module_prefix}_SRCS})
++	if ("${_type}" STREQUAL "")
++		set(_subsystem_out "${_channel_name}-client-${CHANNEL_SUBSYSTEM}")
++	else()
++		set(_subsystem_out "${_channel_name}-client-${CHANNEL_SUBSYSTEM}-${_type}")
++	endif()
++
++	add_library(${_module_name} MODULE ${${_module_prefix}_SRCS})
++	set_target_properties(${_module_name} PROPERTIES PREFIX "lib" OUTPUT_NAME "${_subsystem_out}")
+ 	set_property(TARGET ${_module_name} PROPERTY FOLDER "Channels/${_channel_name}/Client/Subsystem/${CHANNEL_SUBSYSTEM}")
++	# Subsystem entry in source is named
++	#   <subsystem>_freerdp_<channel>_client_subsystem_entry
++	# but the dlopen path looks for the unprefixed
++	#   freerdp_<channel>_client_subsystem_entry
++	# Add a linker --defsym alias so the .so exports both.
++	target_compile_options(${_module_name} PRIVATE -fvisibility=default)
++	target_link_options(${_module_name} PRIVATE
++		"LINKER:--defsym=freerdp_${_channel_name}_client_subsystem_entry=${CHANNEL_SUBSYSTEM}_freerdp_${_channel_name}_client_subsystem_entry")
+ 
++	target_link_libraries(${_module_name} PRIVATE freerdp winpr)
+ 	if (${_module_prefix}_LIBS)
+-		target_link_libraries(${_module_name} PUBLIC ${${_module_prefix}_LIBS})
++		target_link_libraries(${_module_name} PRIVATE ${${_module_prefix}_LIBS})
+ 	endif()
+-	client_channel_install(${_module_name}  ${FREERDP_ADDIN_PATH})
++	install(TARGETS ${_module_name} DESTINATION ${FREERDP_ADDIN_PATH})
+ endmacro(add_channel_client_subsystem_library)
+ 
+ macro(add_channel_server_library _module_prefix _module_name _channel_name _dynamic _entry)
