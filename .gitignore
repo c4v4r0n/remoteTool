@@ -17,9 +17,10 @@
 *.lo
 *.la
 
-# Core dumps from crashes (gdb, valgrind).
-core
-core.*
+# Core dumps from crashes (gdb, valgrind). Be specific - bare `core`
+# would also match the include/core/ source directory.
+/core
+core.[0-9]*
 vgcore.*
 
 # Coverage data, in case anyone runs gcov.
