@@ -80,8 +80,7 @@ wget https://github.com/FreeRDP/FreeRDP/archive/refs/tags/3.5.1.tar.gz \
   -O freerdp-3.5.1.tar.gz
 tar xf freerdp-3.5.1.tar.gz
 cd FreeRDP-3.5.1
-patch -p1 < ../../patches/01-channels-as-modules.patch
-patch -p1 < ../../patches/02-export-channel-helpers.patch
+for p in ../../patches/*.patch; do patch -p1 < "$p"; done
 cd ..
 mkdir -p build && cd build
 cmake ../FreeRDP-3.5.1 \
@@ -91,7 +90,7 @@ cmake ../FreeRDP-3.5.1 \
   -DWITH_CLIENT_CHANNELS=ON \
   -DWITH_SERVER=OFF -DWITH_SHADOW=OFF -DWITH_PROXY=OFF \
   -DWITH_SAMPLE=OFF -DWITH_PLATFORM_SERVER=OFF \
-  -DWITH_X11=OFF -DWITH_WAYLAND=OFF -DWITH_CLIENT_SDL=OFF \
+  -DWITH_X11=ON -DWITH_WAYLAND=OFF -DWITH_CLIENT_SDL=OFF \
   -DBUILD_TESTING=OFF -DWITH_MANPAGES=OFF \
   -DWITH_FFMPEG=OFF -DWITH_SWSCALE=OFF \
   -DWITH_PULSE=OFF -DWITH_OSS=OFF -DWITH_ALSA=OFF \
@@ -101,6 +100,12 @@ make -j$(nproc)
 sudo make install
 sudo ldconfig
 ```
+
+`WITH_X11=ON` is required even though we don't ship `xfreerdp` itself — it's
+what compiles the XKB keyboard scancode helpers into libfreerdp. Patch 03
+disables the `xfreerdp` binary build (which would fail-link against our
+MODULE-built channels). The repo-side Makefile already handles linking the
+remoteTool app against `/opt/remotetool-freerdp`.
 
 ### Build remoteTool
 

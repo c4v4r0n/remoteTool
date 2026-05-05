@@ -539,6 +539,18 @@ static BOOL post_connect(freerdp *instance)
     c->fb_stride = (int)gdi->stride;
     pthread_mutex_unlock(&c->fb_mtx);
 
+    /* Initialize the keyboard layout tables. Without this,
+     * freerdp_keyboard_get_rdp_scancode_from_x11_keycode() returns 0
+     * for every keycode and no keystrokes ever reach the remote. */
+    {
+        rdpSettings *s = instance->context->settings;
+        UINT32 layout = freerdp_settings_get_uint32(s, FreeRDP_KeyboardLayout);
+        layout = freerdp_keyboard_init_ex(
+            layout,
+            freerdp_settings_get_string(s, FreeRDP_KeyboardRemappingList));
+        freerdp_settings_set_uint32(s, FreeRDP_KeyboardLayout, layout);
+    }
+
     /* Override EndPaint to extract dirty rects + signal "frame
      * ready". We do not chain - the default is a no-op pass-through
      * once we take ownership of the dirty bookkeeping. */

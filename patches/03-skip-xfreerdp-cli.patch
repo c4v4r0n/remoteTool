@@ -1,0 +1,17 @@
+--- a/client/X11/CMakeLists.txt
++++ b/client/X11/CMakeLists.txt
+@@ -220,7 +220,13 @@
+ if(WITH_CLIENT_INTERFACE)
+ 	install(TARGETS ${PROJECT_NAME} DESTINATION ${CMAKE_INSTALL_LIBDIR} COMPONENT libraries)
+ endif()
+-add_subdirectory(cli)
++# remoteTool patch: skip the xfreerdp binary. It depends on OBJECT-linked
++# channels (e.g. references client_rail_server_start_cmd from the rail
++# channel sources). Our patch turns channels into MODULE .so plugins, so
++# those refs come up as undefined references at link time. We don't need
++# xfreerdp itself - we only need WITH_X11=ON for the keyboard helper
++# code that gets compiled into libfreerdp.
++# add_subdirectory(cli)
+ 
+ set_property(TARGET ${PROJECT_NAME} PROPERTY FOLDER "Client/X11")
+ 

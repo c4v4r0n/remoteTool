@@ -273,6 +273,17 @@ static gboolean on_key(GtkWidget *w, GdkEventKey *e, gpointer user)
     return TRUE;  /* swallow - don't let GTK navigate via Tab/arrows */
 }
 
+/* Mouse entered the canvas - grab focus so subsequent key events flow
+ * here without the user having to click first. */
+static gboolean on_enter(GtkWidget *w, GdkEventCrossing *e, gpointer user)
+{
+    (void)e; (void)user;
+    if (!gtk_widget_has_focus(w)) {
+        gtk_widget_grab_focus(w);
+    }
+    return FALSE;
+}
+
 /* ------------------------------------------------------------------ */
 /* Clipboard local -> remote                                          */
 /* ------------------------------------------------------------------ */
@@ -440,6 +451,12 @@ rt_rdp_view_t *rt_rdp_view_new(rt_session_t *session)
     gtk_scrolled_window_set_policy(GTK_SCROLLED_WINDOW(v->scrolled),
                                    GTK_POLICY_AUTOMATIC,
                                    GTK_POLICY_AUTOMATIC);
+    /* Stop the scrolled window from eating arrow / Page Up/Down /
+     * Home / End keys for its own scrolling - the remote desktop
+     * needs them. */
+    gtk_scrolled_window_set_capture_button_press(
+        GTK_SCROLLED_WINDOW(v->scrolled), FALSE);
+    gtk_widget_set_can_focus(v->scrolled, FALSE);
     gtk_widget_set_vexpand(v->scrolled, TRUE);
     gtk_widget_set_hexpand(v->scrolled, TRUE);
 
@@ -472,6 +489,8 @@ rt_rdp_view_t *rt_rdp_view_new(rt_session_t *session)
                      G_CALLBACK(on_key), v);
     g_signal_connect(v->area, "key-release-event",
                      G_CALLBACK(on_key), v);
+    g_signal_connect(v->area, "enter-notify-event",
+                     G_CALLBACK(on_enter), v);
     g_signal_connect(v->scrolled, "size-allocate",
                      G_CALLBACK(on_size_allocate), v);
     g_signal_connect(v->combo, "changed",

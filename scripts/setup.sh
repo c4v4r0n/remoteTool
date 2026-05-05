@@ -193,9 +193,16 @@ build_freerdp() {
     mkdir -p build
     cd build
 
-    # Minimal client-only build: skip server/proxy/shadow, skip optional
-    # codecs we don't need, skip the X11 xfreerdp client (we'd break it
-    # by changing how channels are built anyway).
+    # Minimal client-only build:
+    #   - skip server/proxy/shadow targets
+    #   - skip optional codecs we don't use (ffmpeg/pulse/...)
+    #   - skip Wayland (X11 is enough on common desktops)
+    # Keep WITH_X11=ON: that's what compiles the X11 keyboard helpers
+    # (XKB scancode lookup) into libfreerdp - without them
+    # freerdp_keyboard_get_rdp_scancode_from_x11_keycode() returns 0
+    # and no keystrokes ever reach the remote. Patch 03 skips the
+    # xfreerdp binary itself (we don't need it and it can't link
+    # against our MODULE channels).
     cmake "../${srcdir}" \
         -DCMAKE_BUILD_TYPE=Release \
         -DCMAKE_INSTALL_PREFIX="${FREERDP_PREFIX}" \
@@ -209,7 +216,7 @@ build_freerdp() {
         -DWITH_CLIENT_INTERFACE=ON \
         -DWITH_CLIENT_SDL=OFF \
         -DWITH_CLIENT_COMMON=ON \
-        -DWITH_X11=OFF \
+        -DWITH_X11=ON \
         -DWITH_WAYLAND=OFF \
         -DBUILD_TESTING=OFF \
         -DWITH_MANPAGES=OFF \
