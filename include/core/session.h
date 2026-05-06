@@ -36,6 +36,11 @@ typedef struct {
 
     /* Remote pushed a clipboard update. Text only, UTF-8. */
     void (*on_clipboard_text)(void *user, const char *utf8, size_t len);
+
+    /* Protocol reports it is idle / ready for input. Marshaled to
+     * the GTK main thread like the others. May be NULL on protocols
+     * that don't carry a request/response boundary. */
+    void (*on_idle)(void *user);
 } rt_session_ui_callbacks_t;
 
 /*

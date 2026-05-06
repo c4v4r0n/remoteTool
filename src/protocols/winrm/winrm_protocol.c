@@ -165,6 +165,13 @@ static void emit_text(rt_protocol_ctx_t *c, const char *s)
     }
 }
 
+static void emit_idle(rt_protocol_ctx_t *c)
+{
+    if (c->cb.on_idle != NULL) {
+        c->cb.on_idle(c->cb_user);
+    }
+}
+
 /* Build "scheme://host:port/wsman". Caller frees. */
 static char *build_endpoint(const char *host, unsigned short port,
                             rt_winrm_transport_t transport)
@@ -622,6 +629,10 @@ static void run_one_command(rt_protocol_ctx_t *c, const char *cmd)
             }
         }
     }
+
+    /* Pipeline finished (or aborted). Tell the UI it can show the
+     * next prompt. */
+    emit_idle(c);
 }
 
 /* ------------------------------------------------------------------ */
@@ -763,6 +774,8 @@ static int worker_connect(rt_protocol_ctx_t *c)
     }
 
     emit_state(c, RT_PROTO_STATE_CONNECTED, NULL);
+    /* First idle so the view paints its initial prompt. */
+    emit_idle(c);
     return 0;
 }
 

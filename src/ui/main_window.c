@@ -198,6 +198,11 @@ static void winrm_on_state(void *user, rt_proto_state_t state, const char *msg)
     rt_winrm_view_set_input_enabled(v, state == RT_PROTO_STATE_CONNECTED);
 }
 
+static void winrm_on_idle(void *user)
+{
+    rt_winrm_view_show_prompt((rt_winrm_view_t *)user);
+}
+
 static void winrm_on_view_input(const char *bytes, size_t len, void *user)
 {
     rt_session_send_data((rt_session_t *)user, bytes, len);
@@ -298,6 +303,7 @@ static GtkWidget *build_winrm_session(rt_connection_t *conn,
     rt_session_ui_callbacks_t ui = {
         .on_data  = winrm_on_data,
         .on_state = winrm_on_state,
+        .on_idle  = winrm_on_idle,
     };
     rt_session_t *session = rt_session_new(conn, password, &ui, view);
     if (session == NULL) {

@@ -126,6 +126,13 @@ typedef struct {
      * pointer is owned by the callee; it is valid only for the
      * duration of the call. */
     void (*on_clipboard_text)(void *user, const char *utf8, size_t len);
+
+    /* The remote is idle and ready for the next user input. Used by
+     * request/response protocols (WinRM PSRP) so the terminal can
+     * draw a fresh prompt only after the previous pipeline has
+     * finished streaming. May be NULL on protocols that don't have
+     * a discrete idle boundary (SSH/RDP/VNC). */
+    void (*on_idle)(void *user);
 } rt_proto_callbacks_t;
 
 typedef struct rt_protocol_ctx rt_protocol_ctx_t;

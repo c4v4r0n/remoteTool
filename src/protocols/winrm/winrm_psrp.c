@@ -474,7 +474,32 @@ int winrm_psrp_build_create_pipeline(winrm_psrp_t  *p,
 {
     if (winrm_random(out_pid, 16) != 0) return -1;
 
-    char *escaped = xml_escape_cmd(command ? command : "");
+    /* Wrap the user's command so PowerShell formats objects to text
+     * on the server, one line per <S>. Without this, "ls" pipes back
+     * raw DirectoryInfo objects whose CLIXML carries one <S> per
+     * property (Name, FullName, PSPath, ...) - which our scrape-mode
+     * decoder dumps as a flat blob. Out-String -Stream feeds each
+     * formatted output line back as its own primitive string.
+     *
+     * Dot-source (".") rather than call ("&") so that variable
+     * assignments inside the user's command leak into the runspace's
+     * top-level scope and survive across commands. With "&" the
+     * block runs in a child scope and "$x = 5" would be lost the
+     * moment the pipeline ends. Set-Location works either way (it
+     * mutates the runspace's PSDrive state, not a scoped variable).
+     *
+     * -Width 200 keeps wide table output (Get-Process, Get-Service)
+     * from being truncated; PSRP without a real host defaults to a
+     * narrow width otherwise. */
+    char *wrapped = NULL;
+    if (asprintf(&wrapped,
+                 ". { %s } | Out-String -Stream -Width 200",
+                 command ? command : "") < 0) {
+        return -1;
+    }
+
+    char *escaped = xml_escape_cmd(wrapped);
+    free(wrapped);
     if (escaped == NULL) return -1;
 
     char *clixml = clixml_create_pipeline(escaped);

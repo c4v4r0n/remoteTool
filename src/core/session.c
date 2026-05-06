@@ -28,7 +28,8 @@ typedef enum {
     UI_MSG_DATA,
     UI_MSG_STATE,
     UI_MSG_FRAME,
-    UI_MSG_CLIP
+    UI_MSG_CLIP,
+    UI_MSG_IDLE
 } ui_msg_type_t;
 
 typedef struct {
@@ -96,6 +97,11 @@ static gboolean drain_to_ui(gpointer user)
         case UI_MSG_CLIP:
             if (s->ui.on_clipboard_text != NULL) {
                 s->ui.on_clipboard_text(s->ui_user, m->data, m->len);
+            }
+            break;
+        case UI_MSG_IDLE:
+            if (s->ui.on_idle != NULL) {
+                s->ui.on_idle(s->ui_user);
             }
             break;
         }
@@ -190,6 +196,18 @@ static void on_proto_clipboard(void *user, const char *utf8, size_t len)
     schedule_idle(s);
 }
 
+static void on_proto_idle(void *user)
+{
+    rt_session_t *s = user;
+    ui_msg_t *m = calloc(1, sizeof(*m));
+    if (m == NULL) {
+        return;
+    }
+    m->type = UI_MSG_IDLE;
+    g_async_queue_push(s->queue, m);
+    schedule_idle(s);
+}
+
 /* ---- public API ---- */
 
 rt_session_t *rt_session_new(rt_connection_t                 *conn,
@@ -231,6 +249,7 @@ rt_session_t *rt_session_new(rt_connection_t                 *conn,
         .on_state          = on_proto_state,
         .on_frame          = on_proto_frame,
         .on_clipboard_text = on_proto_clipboard,
+        .on_idle           = on_proto_idle,
     };
     s->ctx = ops->open(conn, s->password, &pcb, s);
 
